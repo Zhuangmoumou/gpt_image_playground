@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, useEffect, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent } from 'react'
 import { useStore, reuseConfig, editOutputs, removeTask } from '../store'
 import TaskCard from './TaskCard'
 
@@ -12,6 +12,7 @@ export default function TaskGrid() {
   const selectedTaskIds = useStore((s) => s.selectedTaskIds)
   const setSelectedTaskIds = useStore((s) => s.setSelectedTaskIds)
   const clearSelection = useStore((s) => s.clearSelection)
+  const enableSwipeSelection = useStore((s) => s.settings.enableSwipeSelection)
   const rootRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const [selectionBox, setSelectionBox] = useState<{ startPageX: number; startPageY: number; currentPageX: number; currentPageY: number } | null>(null)
@@ -27,6 +28,16 @@ export default function TaskGrid() {
   const startedWithCtrl = useRef(false)
   const initialSelection = useRef<string[]>([])
   const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
+  const [now, setNow] = useState(Date.now())
+  const hasRunningTasks = tasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable)
+  const selectedTaskIdSet = useMemo(() => new Set(selectedTaskIds), [selectedTaskIds])
+
+  useEffect(() => {
+    if (!hasRunningTasks) return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    setNow(Date.now())
+    return () => window.clearInterval(id)
+  }, [hasRunningTasks])
 
   const filteredTasks = useMemo(() => {
     const sorted = [...tasks].sort((a, b) => b.createdAt - a.createdAt)
@@ -44,13 +55,38 @@ export default function TaskGrid() {
     })
   }, [tasks, searchQuery, filterStatus, filterFavorite])
 
-  const handleDelete = (task: typeof tasks[0]) => {
+  const handleDelete = useCallback((task: typeof tasks[0]) => {
     setConfirmDialog({
       title: '删除记录',
       message: '确定要删除这条记录吗？关联的图片资源也会被清理（如果没有其他任务引用）。',
       action: () => removeTask(task),
     })
-  }
+  }, [setConfirmDialog])
+
+  const handleReuse = useCallback((task: typeof tasks[0]) => {
+    reuseConfig(task)
+  }, [])
+
+  const handleEditOutputs = useCallback((task: typeof tasks[0]) => {
+    editOutputs(task)
+  }, [])
+
+  const handleCardClick = useCallback((taskId: string, e: ReactMouseEvent | ReactTouchEvent) => {
+    if (Date.now() < suppressClickUntil.current) {
+      e.preventDefault()
+      return
+    }
+    suppressClickUntil.current = 0
+    const isCtrl = isMac ? e.metaKey : e.ctrlKey
+    if (isCtrl) {
+      useStore.getState().toggleTaskSelection(taskId)
+    } else if (useStore.getState().selectedTaskIds.length > 0) {
+      clearSelection()
+      setDetailTaskId(taskId)
+    } else {
+      setDetailTaskId(taskId)
+    }
+  }, [clearSelection, isMac, setDetailTaskId])
 
   const getPagePoint = (clientX: number, clientY: number) => ({
     pageX: clientX + window.scrollX,
@@ -291,26 +327,13 @@ export default function TaskGrid() {
           <div key={task.id} className="task-card-wrapper" data-task-id={task.id}>
             <TaskCard
               task={task}
-              onClick={(e) => {
-                if (Date.now() < suppressClickUntil.current) {
-                  e.preventDefault()
-                  return
-                }
-                suppressClickUntil.current = 0
-                const isCtrl = isMac ? e.metaKey : e.ctrlKey
-                if (isCtrl) {
-                  useStore.getState().toggleTaskSelection(task.id)
-                } else if (selectedTaskIds.length > 0) {
-                  clearSelection()
-                  setDetailTaskId(task.id)
-                } else {
-                  setDetailTaskId(task.id)
-                }
-              }}
-              onReuse={() => reuseConfig(task)}
-              onEditOutputs={() => editOutputs(task)}
-              onDelete={() => handleDelete(task)}
-              isSelected={selectedTaskIds.includes(task.id)}
+              onClick={handleCardClick}
+              onReuse={handleReuse}
+              onEditOutputs={handleEditOutputs}
+              onDelete={handleDelete}
+              isSelected={selectedTaskIdSet.has(task.id)}
+              now={task.status === 'running' || task.falRecoverable || task.customRecoverable ? now : task.finishedAt ?? task.createdAt}
+              enableSwipeSelection={enableSwipeSelection}
             />
           </div>
         ))}

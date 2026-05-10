@@ -162,6 +162,53 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   return errorMsg
 }
 
+export function getUnknownErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  const cause = err && typeof err === 'object' && 'cause' in err ? (err as { cause?: unknown }).cause : null
+  if (!cause) return message
+  if (cause instanceof Error) return `${message}\n原因：${cause.message}`
+  if (typeof cause === 'object') return `${message}\n原因：${JSON.stringify(cause)}`
+  return `${message}\n原因：${String(cause)}`
+}
+
+function stripLeadingHeartbeats(text: string) {
+  let rest = text.replace(/^﻿/, '').trimStart()
+
+  while (rest) {
+    if (rest.startsWith(':')) {
+      const nextLineIndex = rest.indexOf('\n')
+      rest = nextLineIndex >= 0 ? rest.slice(nextLineIndex + 1).trimStart() : ''
+      continue
+    }
+
+    if (rest.startsWith('{}')) {
+      const next = rest.slice(2)
+      if (!next || /^\s/.test(next)) {
+        rest = next.trimStart()
+        continue
+      }
+    }
+
+    break
+  }
+
+  return rest
+}
+
+export async function readJsonIgnoringHeartbeats<T>(response: Response): Promise<T> {
+  const text = await response.text()
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    const cleaned = stripLeadingHeartbeats(text)
+    try {
+      return JSON.parse(cleaned) as T
+    } catch (err) {
+      throw new Error(`接口返回的 JSON 无法解析\nHTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}\n响应体：\n${text || '(空响应体)'}\n解析错误：${getUnknownErrorMessage(err)}`)
+    }
+  }
+}
+
 export function pickActualParams(source: unknown): Partial<TaskParams> {
   if (!source || typeof source !== 'object') return {}
   const record = source as Record<string, unknown>

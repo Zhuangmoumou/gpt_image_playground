@@ -1085,6 +1085,24 @@ export default function SettingsModal() {
                 </div>
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">列表左右滑动选中</span>
+                    <button
+                      type="button"
+                      onClick={() => commitSettings({ ...draft, enableSwipeSelection: !draft.enableSwipeSelection })}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.enableSwipeSelection ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={draft.enableSwipeSelection}
+                      aria-label="列表左右滑动选中"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.enableSwipeSelection ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    开启后，可在移动端卡片上左右滑动切换选中状态。
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">重启后加载上次的输入框</span>
                     <button
                       type="button"

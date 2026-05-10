@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { memo, useEffect, useState, useRef } from 'react'
 import type { TaskRecord } from '../types'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
 import { formatImageRatio } from '../lib/size'
@@ -8,41 +8,47 @@ import { CodeIcon } from './icons'
 
 interface Props {
   task: TaskRecord
-  onReuse: () => void
-  onEditOutputs: () => void
-  onDelete: () => void
-  onClick: (e: React.MouseEvent | React.TouchEvent) => void
+  onReuse: (task: TaskRecord) => void
+  onEditOutputs: (task: TaskRecord) => void
+  onDelete: (task: TaskRecord) => void
+  onClick: (taskId: string, e: React.MouseEvent | React.TouchEvent) => void
   isSelected?: boolean
+  now: number
+  enableSwipeSelection: boolean
 }
 
-export default function TaskCard({
+function TaskCard({
   task,
   onReuse,
   onEditOutputs,
   onDelete,
   onClick,
   isSelected,
+  now,
+  enableSwipeSelection,
 }: Props) {
   const [thumbSrc, setThumbSrc] = useState<string>('')
   const [coverRatio, setCoverRatio] = useState<string>('')
   const [coverSize, setCoverSize] = useState<string>('')
-  const [now, setNow] = useState(Date.now())
   const [swipeOffset, setSwipeOffset] = useState(0)
   const [isSwiping, setIsSwiping] = useState(false)
   const [swipeStartedSelected, setSwipeStartedSelected] = useState(false)
   const [swipeActionActive, setSwipeActionActive] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
-  const settings = useStore((s) => s.settings)
+  const alwaysShowRetryButton = useStore((s) => s.settings.alwaysShowRetryButton)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const swipeResetTimerRef = useRef<number | null>(null)
   const suppressClickUntilRef = useRef(0)
   const horizontalSwipeRef = useRef(false)
+  const swipeFrameRef = useRef<number | null>(null)
+  const queuedSwipeOffsetRef = useRef(0)
 
   const isTagScrollTarget = (target: EventTarget | null) => {
     return target instanceof Element && Boolean(target.closest('[data-tag-scroll-area]'))
   }
 
   const handleTouchStart = (e: React.TouchEvent) => {
+    if (!enableSwipeSelection) return
     if (isTagScrollTarget(e.target)) {
       touchStartRef.current = null
       horizontalSwipeRef.current = false
@@ -64,6 +70,7 @@ export default function TaskCard({
   }
 
   const handleTouchMove = (e: React.TouchEvent) => {
+    if (!enableSwipeSelection) return
     if (isTagScrollTarget(e.target)) return
     if (!touchStartRef.current) return
     const deltaX = e.touches[0].clientX - touchStartRef.current.x
@@ -73,14 +80,19 @@ export default function TaskCard({
     if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 10) {
       horizontalSwipeRef.current = true
       e.preventDefault()
-      // 限制滑动距离，例如最大 60px
-      const boundedOffset = Math.max(-60, Math.min(60, deltaX))
-      setSwipeOffset(boundedOffset)
+      queuedSwipeOffsetRef.current = Math.max(-60, Math.min(60, deltaX))
+      if (swipeFrameRef.current == null) {
+        swipeFrameRef.current = window.requestAnimationFrame(() => {
+          swipeFrameRef.current = null
+          setSwipeOffset(queuedSwipeOffsetRef.current)
+        })
+      }
       setSwipeActionActive(Math.abs(deltaX) >= 40)
     }
   }
 
   const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!enableSwipeSelection) return
     if (isTagScrollTarget(e.target)) {
       touchStartRef.current = null
       horizontalSwipeRef.current = false
@@ -114,6 +126,7 @@ export default function TaskCard({
   }
 
   const handleTouchCancel = () => {
+    if (!enableSwipeSelection) return
     touchStartRef.current = null
     horizontalSwipeRef.current = false
     setIsSwiping(false)
@@ -125,15 +138,10 @@ export default function TaskCard({
     if (swipeResetTimerRef.current != null) {
       window.clearTimeout(swipeResetTimerRef.current)
     }
+    if (swipeFrameRef.current != null) {
+      window.cancelAnimationFrame(swipeFrameRef.current)
+    }
   }, [])
-
-  // 定时更新运行中任务的计时
-  useEffect(() => {
-    if (task.status !== 'running' && !(task.status === 'error' && (task.falRecoverable || task.customRecoverable))) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    setNow(Date.now())
-    return () => clearInterval(id)
-  }, [task.customRecoverable, task.falRecoverable, task.status])
 
   // 加载缩略图
   useEffect(() => {
@@ -217,7 +225,7 @@ export default function TaskCard({
           isSwiping || swipeOffset || swipeActionActive ? 'opacity-100' : 'opacity-0'
         } ${swipeBgClass} ${
           swipeOffset > 0 ? 'justify-start pl-6' : 'justify-end pr-6'
-        }`}
+        } ${enableSwipeSelection ? '' : 'hidden'}`}
       >
         <svg className={`w-8 h-8 transition-transform duration-150 ${showSwipeAction ? 'scale-110 text-white' : 'scale-90 text-white/60'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           {swipeStartedSelected && showSwipeAction ? (
@@ -240,6 +248,7 @@ export default function TaskCard({
         }`}
         style={{
           transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
+          willChange: isSwiping ? 'transform' : undefined,
         }}
         onClick={(e) => {
           if (Date.now() < suppressClickUntilRef.current) {
@@ -247,7 +256,7 @@ export default function TaskCard({
             e.stopPropagation()
             return
           }
-          onClick(e)
+          onClick(task.id, e)
         }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -465,7 +474,7 @@ export default function TaskCard({
               className="flex w-full items-center justify-between flex-shrink-0 mt-0.5 sm:w-auto sm:justify-end sm:gap-1"
               onClick={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting) || settings.alwaysShowRetryButton) && (
+              {((task.status === 'error' && !isFalReconnecting) || alwaysShowRetryButton) && (
                 <button
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
@@ -502,7 +511,7 @@ export default function TaskCard({
                 </svg>
               </button>
               <button
-                onClick={onReuse}
+                onClick={() => onReuse(task)}
                 className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
                 title="复用配置"
               >
@@ -521,7 +530,7 @@ export default function TaskCard({
                 </svg>
               </button>
               <button
-                onClick={onEditOutputs}
+                onClick={() => onEditOutputs(task)}
                 className="p-1.5 rounded-md hover:bg-green-50 dark:hover:bg-green-950/30 text-gray-400 hover:text-green-500 transition disabled:opacity-30"
                 title="编辑输出"
                 disabled={!task.outputImages?.length}
@@ -541,7 +550,7 @@ export default function TaskCard({
                 </svg>
               </button>
               <button
-                onClick={onDelete}
+                onClick={() => onDelete(task)}
                 className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 text-gray-400 hover:text-red-500 transition"
                 title="删除记录"
               >
@@ -567,3 +576,5 @@ export default function TaskCard({
     </div>
   )
 }
+
+export default memo(TaskCard)

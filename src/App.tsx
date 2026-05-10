@@ -1,5 +1,4 @@
 import { useEffect } from 'react'
-import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
@@ -14,6 +13,7 @@ import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
+import AuthGate from './components/AuthGate'
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
@@ -33,7 +33,6 @@ export default function App() {
       window.history.replaceState(null, '', nextUrl)
     }
 
-    initStore()
   }, [setSettings])
 
   useEffect(() => {
@@ -48,7 +47,7 @@ export default function App() {
   }, [])
 
   return (
-    <>
+    <AuthGate>
       <Header />
       <main data-home-main data-drag-select-surface className="pb-48">
         <div className="safe-area-x max-w-7xl mx-auto">
@@ -64,6 +63,6 @@ export default function App() {
       <Toast />
       <MaskEditorModal />
       <ImageContextMenu />
-    </>
+    </AuthGate>
   )
 }

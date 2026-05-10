@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { useVersionCheck } from '../hooks/useVersionCheck'
 import { useTooltip } from '../hooks/useTooltip'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
+import { logout } from '../lib/serverApi'
 import ViewportTooltip from './ViewportTooltip'
 import HelpModal from './HelpModal'
 
@@ -19,6 +20,8 @@ function isInstalledPwa() {
 export default function Header() {
   const setShowSettings = useStore((s) => s.setShowSettings)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
+  const authUser = useStore((s) => s.authUser)
+  const resetLocalAccountState = useStore((s) => s.resetLocalAccountState)
   const { hasUpdate, latestRelease, dismiss } = useVersionCheck()
   const [showHelp, setShowHelp] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
@@ -27,6 +30,11 @@ export default function Header() {
   const installTooltip = useTooltip()
   const helpTooltip = useTooltip()
   const settingsTooltip = useTooltip()
+
+  const handleLogout = async () => {
+    await logout()
+    await resetLocalAccountState()
+  }
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -114,6 +122,17 @@ export default function Header() {
             )}
           </div>
           <div className="flex items-center gap-1">
+            {authUser && (
+              <div className="hidden sm:flex items-center gap-2 px-2 text-xs text-gray-500 dark:text-gray-400">
+                <span>{authUser.username}</span>
+                <button
+                  onClick={handleLogout}
+                  className="rounded-md px-2 py-1 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-900 dark:hover:text-gray-200"
+                >
+                  退出登录
+                </button>
+              </div>
+            )}
             {!isPwaInstalled && (
               <div
                 className="relative"
