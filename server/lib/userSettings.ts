@@ -1,5 +1,6 @@
 import { DEFAULT_PARAMS } from '../../src/types'
 import type { AppSettings, TaskParams } from '../../src/types'
+import { normalizeSettings } from '../../src/lib/apiProfiles'
 import { db, type UserSettingsRow } from '../db/client'
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -17,6 +18,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,
   alwaysShowRetryButton: false,
+  enableGlassEffects: true,
   activeProfileId: 'default-openai',
   profiles: [{
     id: 'default-openai',
@@ -40,21 +42,29 @@ function parseJson<T>(value: string, fallback: T): T {
   }
 }
 
+function normalizeUserSettings(settings: unknown): AppSettings {
+  return normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    ...(settings && typeof settings === 'object' ? settings : {}),
+  })
+}
+
 export function getUserSettings(userId: string): { settings: AppSettings; params: TaskParams } {
   const row = db.prepare('SELECT * FROM user_settings WHERE user_id = ?').get(userId) as UserSettingsRow | undefined
-  if (!row) return { settings: DEFAULT_SETTINGS, params: { ...DEFAULT_PARAMS } }
+  if (!row) return { settings: normalizeUserSettings(DEFAULT_SETTINGS), params: { ...DEFAULT_PARAMS } }
 
   return {
-    settings: parseJson(row.settings_json, DEFAULT_SETTINGS),
+    settings: normalizeUserSettings(parseJson(row.settings_json, DEFAULT_SETTINGS)),
     params: { ...DEFAULT_PARAMS, ...parseJson(row.params_json, DEFAULT_PARAMS) },
   }
 }
 
 export function upsertUserSettings(userId: string, settings: AppSettings, params: TaskParams) {
   const now = Date.now()
+  const normalizedSettings = normalizeUserSettings(settings)
   const payload = {
     user_id: userId,
-    settings_json: JSON.stringify(settings),
+    settings_json: JSON.stringify(normalizedSettings),
     params_json: JSON.stringify({ ...DEFAULT_PARAMS, ...params }),
     created_at: now,
     updated_at: now,

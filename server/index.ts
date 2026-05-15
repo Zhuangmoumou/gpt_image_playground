@@ -18,16 +18,42 @@ const app = Fastify({
   bodyLimit: config.maxUploadMb * 1024 * 1024,
 })
 
+const useColor = Boolean(process.stdout.isTTY)
+const color = {
+  dim: useColor ? '\x1b[2m' : '',
+  blue: useColor ? '\x1b[34m' : '',
+  green: useColor ? '\x1b[32m' : '',
+  yellow: useColor ? '\x1b[33m' : '',
+  red: useColor ? '\x1b[31m' : '',
+  cyan: useColor ? '\x1b[36m' : '',
+  reset: useColor ? '\x1b[0m' : '',
+}
+
 function timestamp() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
 }
 
+function log(level: 'INFO' | 'WARN' | 'ERROR', message: string) {
+  const levelColor = level === 'ERROR' ? color.red : level === 'WARN' ? color.yellow : color.cyan
+  const output = `${color.dim}[${timestamp()}]${color.reset} ${levelColor}${level}${color.reset} ${message}`
+  if (level === 'ERROR') {
+    console.error(output)
+    return
+  }
+  console.log(output)
+}
+
 app.addHook('onResponse', async (request, reply) => {
-  console.log(`[${timestamp()}] ${request.method} ${request.url} -> ${reply.statusCode}`)
+  const statusColor = reply.statusCode >= 500
+    ? color.red
+    : reply.statusCode >= 400
+      ? color.yellow
+      : color.green
+  log('INFO', `${color.blue}${request.method}${color.reset} ${request.url} -> ${statusColor}${reply.statusCode}${color.reset}`)
 })
 
 app.addHook('onError', async (request, reply, error) => {
-  console.error(`[${timestamp()}] ${request.method} ${request.url} 出错：${error.message}`)
+  log('ERROR', `${color.blue}${request.method}${color.reset} ${request.url} 出错：${error.message}`)
 })
 
 await app.register(cookie, { secret: config.sessionSecret })
@@ -55,9 +81,9 @@ app.setNotFoundHandler((request, reply) => {
 
 try {
   await app.listen({ host: config.host, port: config.port })
-  console.log(`[${timestamp()}] 服务已启动：http://${config.host}:${config.port}`)
-  console.log(`[${timestamp()}] 数据目录：${config.dataDir}`)
+  log('INFO', `服务已启动：${color.green}http://${config.host}:${config.port}${color.reset}`)
+  log('INFO', `数据目录：${color.green}${config.dataDir}${color.reset}`)
 } catch (err) {
-  console.error(`[${timestamp()}] 服务启动失败：${err instanceof Error ? err.message : String(err)}`)
+  log('ERROR', `服务启动失败：${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
 }

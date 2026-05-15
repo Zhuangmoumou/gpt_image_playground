@@ -83,6 +83,7 @@ export interface AppSettings {
   persistInputOnRestart: boolean
   reuseTaskApiProfileTemporarily: boolean
   alwaysShowRetryButton: boolean
+  enableGlassEffects: boolean
   profiles: ApiProfile[]
   activeProfileId: string
 }

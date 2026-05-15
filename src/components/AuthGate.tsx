@@ -72,7 +72,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-4 py-12 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950">
       <div className="mx-auto flex min-h-[70vh] max-w-md items-center">
-        <form onSubmit={handleSubmit} className="w-full rounded-3xl border border-white/70 bg-white/90 p-6 shadow-xl backdrop-blur dark:border-white/[0.08] dark:bg-gray-900/90">
+        <form onSubmit={handleSubmit} className="w-full rounded-3xl border border-white/70 bg-white/90 p-6 shadow-xl backdrop-blur glass-panel dark:border-white/[0.08] dark:bg-gray-900/90">
           <div className="mb-6 text-center">
             <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">GPT Image Playground</h1>
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">

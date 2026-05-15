@@ -22,6 +22,7 @@ import {
   switchApiProfileProvider,
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
+import { logout } from '../lib/serverApi'
 import type { ApiProfile, AppSettings, CustomProviderDefinition } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -271,6 +272,8 @@ export default function SettingsModal() {
   const setShowSettings = useStore((s) => s.setShowSettings)
   const settings = useStore((s) => s.settings)
   const setSettings = useStore((s) => s.setSettings)
+  const authUser = useStore((s) => s.authUser)
+  const resetLocalAccountState = useStore((s) => s.resetLocalAccountState)
   const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
   const setReusedTaskApiProfile = useStore((s) => s.setReusedTaskApiProfile)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
@@ -285,6 +288,11 @@ export default function SettingsModal() {
   const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
   
   const [draft, setDraft] = useState<AppSettings>(normalizeSettings(settings))
+  const draftRef = useRef(draft)
+  const setCurrentDraft = (nextDraft: AppSettings) => {
+    draftRef.current = nextDraft
+    setDraft(nextDraft)
+  }
   const [timeoutInput, setTimeoutInput] = useState(String(getActiveApiProfile(settings).timeout))
   const [showApiKey, setShowApiKey] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
@@ -388,7 +396,7 @@ export default function SettingsModal() {
           : false,
       })),
     })
-    setDraft(nextDraft)
+    setCurrentDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
   }, [apiProxyAvailable, apiProxyLocked, showSettings, settings, reusedTaskApiProfileId])
 
@@ -484,7 +492,7 @@ export default function SettingsModal() {
         ? nextDraft.activeProfileId
         : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
     })
-    setDraft(normalizedDraft)
+    setCurrentDraft(normalizedDraft)
     setSettings(normalizedDraft)
   }
 
@@ -571,7 +579,7 @@ export default function SettingsModal() {
 
   const updateActiveProfile = (patch: Partial<ApiProfile>, commit = false) => {
     const nextDraft = getDraftWithActiveProfilePatch(patch)
-    setDraft(nextDraft)
+    setCurrentDraft(nextDraft)
     if (commit) commitSettings(nextDraft)
   }
 
@@ -586,16 +594,23 @@ export default function SettingsModal() {
       timeoutInput.trim() === '' || Number.isNaN(nextTimeout)
         ? DEFAULT_SETTINGS.timeout
         : nextTimeout
+    const currentDraft = draftRef.current
+    const currentActiveProfile = getActiveApiProfile(currentDraft)
     const nextDraft = {
-      ...draft,
-      profiles: activeProviderIsOpenAICompatible
-        ? draft.profiles.map((profile) =>
-            profile.id === activeProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
+      ...currentDraft,
+      profiles: isOpenAICompatibleProvider(currentDraft, currentActiveProfile.provider)
+        ? currentDraft.profiles.map((profile) =>
+            profile.id === currentActiveProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
           )
-        : draft.profiles,
+        : currentDraft.profiles,
     }
     commitSettings(nextDraft)
     setShowSettings(false)
+  }
+
+  const handleLogout = async () => {
+    await logout()
+    await resetLocalAccountState()
   }
 
   const commitTimeout = useCallback(() => {
@@ -620,7 +635,7 @@ export default function SettingsModal() {
         const imported = await importData(file, { importConfig, importTasks })
         if (imported) {
           const nextDraft = normalizeSettings(useStore.getState().settings)
-          setDraft(nextDraft)
+          setCurrentDraft(nextDraft)
           setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
           setShowProfileMenu(false)
         }
@@ -634,7 +649,7 @@ export default function SettingsModal() {
   const handleClearAllData = async () => {
     await clearData({ clearConfig, clearTasks })
     const nextDraft = normalizeSettings(useStore.getState().settings)
-    setDraft(nextDraft)
+    setCurrentDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
     setShowProfileMenu(false)
   }
@@ -959,7 +974,7 @@ export default function SettingsModal() {
               ...mergedDraft,
               activeProfileId: importedProfile.id,
             })
-        setDraft(nextDraft)
+        setCurrentDraft(nextDraft)
         setSettings(nextDraft)
         setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
         setShowCustomProviderImport(false)
@@ -989,12 +1004,12 @@ export default function SettingsModal() {
   return (
         <div data-no-drag-select className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in"
+        className="absolute inset-0 bg-black/30 backdrop-blur-sm glass-overlay animate-overlay-in"
         onClick={handleClose}
       />
       <div
         ref={settingsScrollBoundaryRef}
-        className="relative z-10 w-full max-w-3xl rounded-3xl border border-white/50 bg-white/95 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 flex h-[85vh] sm:h-[600px] flex-col overflow-hidden"
+        className="relative z-10 w-full max-w-3xl rounded-3xl border border-white/50 bg-white/95 glass-panel shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 flex h-[85vh] sm:h-[600px] flex-col overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between shrink-0 p-5 border-b border-gray-100 dark:border-white/[0.08]">
@@ -1139,6 +1154,24 @@ export default function SettingsModal() {
                 </div>
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">启用毛玻璃效果</span>
+                    <button
+                      type="button"
+                      onClick={() => commitSettings({ ...draft, enableGlassEffects: !draft.enableGlassEffects })}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.enableGlassEffects ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={draft.enableGlassEffects}
+                      aria-label="启用毛玻璃效果"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.enableGlassEffects ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    关闭后，会减少模糊和半透明效果，提升低性能设备上的交互流畅度。
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">成功任务仍然展示重试按钮</span>
                     <button
                       type="button"
@@ -1213,7 +1246,7 @@ export default function SettingsModal() {
                     {showProfileMenu && (
                       <>
                         <div
-                          className="absolute right-0 top-full z-50 mt-1.5 w-full overflow-hidden overflow-y-auto rounded-xl border border-gray-200/60 bg-white/95 py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl animate-dropdown-down dark:border-white/[0.08] dark:bg-gray-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] dark:ring-white/10 custom-scrollbar"
+                          className="absolute right-0 top-full z-50 mt-1.5 w-full overflow-hidden overflow-y-auto rounded-xl border border-gray-200/60 bg-white/95 py-1 shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl glass-popup animate-dropdown-down dark:border-white/[0.08] dark:bg-gray-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] dark:ring-white/10 custom-scrollbar"
                           style={{ maxHeight: profileMenuMaxHeight }}
                         >
                           <button
@@ -1673,7 +1706,7 @@ export default function SettingsModal() {
                   本项目的成长离不开每一位用户的使用、反馈、贡献与支持，感谢一路有你。
                 </p>
 
-                <div className="flex items-center justify-center gap-3">
+                <div className="flex flex-wrap items-center justify-center gap-3">
                   <a
                     href="https://github.com/CookSleep/gpt_image_playground/issues"
                     target="_blank"
@@ -1685,6 +1718,18 @@ export default function SettingsModal() {
                     </svg>
                     反馈问题
                   </a>
+                  {authUser && (
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="flex items-center justify-center gap-2 rounded-xl bg-red-50 px-5 py-2.5 text-sm font-medium text-red-600 transition-all hover:bg-red-100 hover:text-red-700 dark:bg-red-500/10 dark:text-red-300 dark:hover:bg-red-500/15 dark:hover:text-red-200"
+                    >
+                      <svg className="h-4 w-4 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H9m4 4v1a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h5a2 2 0 012 2v1" />
+                      </svg>
+                      退出登录
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -1695,11 +1740,11 @@ export default function SettingsModal() {
 
         {showCustomProviderImport && createPortal(
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in" onClick={() => {
+            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm glass-overlay animate-overlay-in" onClick={() => {
               setShowCustomProviderImport(false)
               setEditingCustomProviderId(null)
             }} />
-            <div className="relative z-10 w-full max-w-md rounded-3xl border border-white/50 bg-white/95 p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 flex flex-col h-[85vh] sm:h-[680px] max-h-[90vh] overflow-hidden">
+            <div className="relative z-10 w-full max-w-md rounded-3xl border border-white/50 bg-white/95 glass-panel p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 flex flex-col h-[85vh] sm:h-[680px] max-h-[90vh] overflow-hidden">
               <div className="mb-5 flex items-center justify-between gap-4 shrink-0">
                 <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">
                   {editingCustomProviderId ? '编辑自定义服务商' : '创建自定义服务商'}
@@ -1820,7 +1865,7 @@ export default function SettingsModal() {
           , document.body)}
         {profileTouchDragPreview && createPortal(
           <div
-            className="fixed pointer-events-none z-[110] flex items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2 text-xs text-gray-700 shadow-xl ring-1 ring-black/5 backdrop-blur-xl dark:bg-gray-900/95 dark:text-gray-300 dark:ring-white/10"
+            className="fixed pointer-events-none z-[110] flex items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2 text-xs text-gray-700 shadow-xl ring-1 ring-black/5 backdrop-blur-xl glass-popup dark:bg-gray-900/95 dark:text-gray-300 dark:ring-white/10"
             style={{
               left: profileTouchDragPreview.x - profileTouchDragPreview.offsetX,
               top: profileTouchDragPreview.y - profileTouchDragPreview.offsetY,
@@ -1844,9 +1889,9 @@ export default function SettingsModal() {
             className="fixed inset-0 z-[110] flex items-center justify-center p-4"
             onClick={() => setCopyImportUrlProfile(null)}
           >
-            <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md animate-overlay-in" />
+            <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md glass-overlay animate-overlay-in" />
             <div
-              className="relative bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl border border-white/50 dark:border-white/[0.08] rounded-3xl shadow-[0_8px_40px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_40px_rgb(0,0,0,0.4)] max-w-sm w-full p-6 z-10 ring-1 ring-black/5 dark:ring-white/10 animate-confirm-in"
+              className="relative bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl glass-panel border border-white/50 dark:border-white/[0.08] rounded-3xl shadow-[0_8px_40px_rgb(0,0,0,0.12)] dark:shadow-[0_8px_40px_rgb(0,0,0,0.4)] max-w-sm w-full p-6 z-10 ring-1 ring-black/5 dark:ring-white/10 animate-confirm-in"
               onClick={(e) => e.stopPropagation()}
             >
               <button

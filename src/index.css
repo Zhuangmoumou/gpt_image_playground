@@ -25,6 +25,63 @@ body {
   user-select: none;
 }
 
+.glass-header,
+.glass-overlay,
+.glass-panel,
+.glass-popup,
+.glass-toolbar,
+.glass-screen {
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, backdrop-filter 0.2s ease, -webkit-backdrop-filter 0.2s ease;
+}
+
+html[data-glass='off'] .glass-header,
+html[data-glass='off'] .glass-overlay,
+html[data-glass='off'] .glass-panel,
+html[data-glass='off'] .glass-popup,
+html[data-glass='off'] .glass-toolbar,
+html[data-glass='off'] .glass-screen {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-glass='off'] .glass-header {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+}
+
+html.dark[data-glass='off'] .glass-header {
+  background-color: rgba(3, 7, 18, 0.97) !important;
+}
+
+html[data-glass='off'] .glass-overlay {
+  background-color: rgba(15, 23, 42, 0.28) !important;
+}
+
+html.dark[data-glass='off'] .glass-overlay {
+  background-color: rgba(0, 0, 0, 0.52) !important;
+}
+
+html[data-glass='off'] .glass-screen {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+}
+
+html.dark[data-glass='off'] .glass-screen {
+  background-color: rgba(17, 24, 39, 0.94) !important;
+}
+
+html[data-glass='off'] .glass-panel,
+html[data-glass='off'] .glass-popup,
+html[data-glass='off'] .glass-toolbar {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.08) !important;
+}
+
+html.dark[data-glass='off'] .glass-panel,
+html.dark[data-glass='off'] .glass-popup,
+html.dark[data-glass='off'] .glass-toolbar {
+  background-color: rgba(17, 24, 39, 0.98) !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28) !important;
+}
+
 input,
 textarea,
 select,

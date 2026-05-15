@@ -66,6 +66,11 @@ function createOpenAITimeoutError(timeoutSeconds: number) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。`
 }
 
+function applyGlassEffects(enabled: boolean) {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.glass = enabled ? 'on' : 'off'
+}
+
 export function getCachedImage(id: string): string | undefined {
   const dataUrl = imageCache.get(id)
   if (dataUrl) {
@@ -406,6 +411,7 @@ export const useStore = create<AppState>()(
         thumbnailCache.clear()
         dismissAllTooltips()
         await clearImages()
+        applyGlassEffects(DEFAULT_SETTINGS.enableGlassEffects)
         set({
           authUser: null,
           settings: normalizeSettings(DEFAULT_SETTINGS),
@@ -462,6 +468,7 @@ export const useStore = create<AppState>()(
         }
         const settings = normalizeSettings(merged)
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
+        applyGlassEffects(settings.enableGlassEffects)
         if (st.authUser) {
           void saveUserSettings(settings, st.params)
         }
@@ -624,6 +631,9 @@ export const useStore = create<AppState>()(
       name: 'gpt-image-playground',
       partialize: getPersistedState,
       merge: mergePersistedState,
+      onRehydrateStorage: () => (state) => {
+        if (state) applyGlassEffects(normalizeSettings(state.settings).enableGlassEffects)
+      },
     },
   ),
 )
@@ -987,8 +997,10 @@ async function recoverFalTask(taskId: string) {
 /** 初始化：从服务端加载设置、任务和图片引用，本地仅保留预览/缩略图缓存 */
 export async function initStore() {
   const [{ settings, params }, { tasks: storedTasks }] = await Promise.all([getUserSettings(), listServerTasks()])
+  const normalizedSettings = normalizeSettings(settings)
+  applyGlassEffects(normalizedSettings.enableGlassEffects)
   useStore.setState({
-    settings: normalizeSettings(settings),
+    settings: normalizedSettings,
     params: { ...DEFAULT_PARAMS, ...params },
   })
 
