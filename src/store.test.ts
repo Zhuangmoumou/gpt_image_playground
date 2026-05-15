@@ -1,10 +1,60 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
-import type { TaskRecord } from './types'
+import type { StoredImage, StoredImageThumbnail, TaskRecord } from './types'
+import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
+vi.mock('./lib/db', () => {
+  const tasks = new Map<string, TaskRecord>()
+  const images = new Map<string, StoredImage>()
+  const thumbnails = new Map<string, StoredImageThumbnail>()
+  let imageSeq = 0
+
+  return {
+    CURRENT_THUMBNAIL_VERSION: 2,
+    getAllTasks: async () => [...tasks.values()],
+    putTask: async (task: TaskRecord) => {
+      tasks.set(task.id, task)
+      return task.id
+    },
+    deleteTask: async (id: string) => {
+      tasks.delete(id)
+    },
+    clearTasks: async () => {
+      tasks.clear()
+    },
+    getImage: async (id: string) => images.get(id),
+    getImageThumbnail: async (id: string) => thumbnails.get(id),
+    getStoredFreshImageThumbnail: async (id: string) => thumbnails.get(id),
+    getAllImageIds: async () => [...images.keys()],
+    getAllImages: async () => [...images.values()],
+    putImage: async (image: StoredImage) => {
+      images.set(image.id, image)
+      return image.id
+    },
+    putImageThumbnail: async (thumbnail: StoredImageThumbnail) => {
+      thumbnails.set(thumbnail.id, thumbnail)
+      return thumbnail.id
+    },
+    deleteImage: async (id: string) => {
+      images.delete(id)
+      thumbnails.delete(id)
+    },
+    clearImages: async () => {
+      images.clear()
+      thumbnails.clear()
+    },
+    storeImage: async (dataUrl: string, source: StoredImage['source'] = 'upload') => {
+      const id = `stored-image-${++imageSeq}`
+      images.set(id, { id, dataUrl, source, createdAt: Date.now() })
+      return id
+    },
+  }
+})
+import { clearImages, putImage } from './lib/db'
 import { editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
+const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -74,6 +124,23 @@ describe('mask draft lifecycle in store actions', () => {
     await submitTask()
 
     expect(useStore.getState().maskDraft).toBeNull()
+  })
+
+  it('preserves selected image mentions when replacing a mask target with an equivalent image id', () => {
+    const replacement = { id: 'image-a-replacement', dataUrl: imageA.dataUrl }
+    const prompt = `参考 ${getSelectedImageMentionLabel(0)} 生成`
+    useStore.setState({
+      prompt,
+      inputImages: [imageA, imageB],
+    })
+
+    useStore.getState().setInputImages([replacement, imageB], {
+      equivalentImageIds: { [imageA.id]: replacement.id },
+    })
+
+    const state = useStore.getState()
+    expect(state.inputImages.map((img) => img.id)).toEqual([replacement.id, imageB.id])
+    expect(state.prompt).toBe(prompt)
   })
 })
 
@@ -188,6 +255,32 @@ describe('reused task API profile', () => {
     expect(state.reusedTaskApiProfileId).toBe(falProfile.id)
     expect(state.params).toMatchObject({ n: 4, size: '1360x1024', quality: 'high' })
     expect(state.showToast).toHaveBeenCalledWith('已临时复用该任务的 API 配置「fal 配置」', 'success')
+  })
+
+  it('keeps selected image mentions when reusing a task with different current input images', async () => {
+    await clearImages()
+    await putImage(imageA)
+    await putImage(imageB)
+    const taskPrompt = `参考 ${getSelectedImageMentionLabel(1)} 生成`
+
+    useStore.setState({
+      prompt: `当前 ${getSelectedImageMentionLabel(1)}`,
+      inputImages: [
+        { id: 'current-x', dataUrl: 'data:image/png;base64,x' },
+        { id: 'current-y', dataUrl: 'data:image/png;base64,y' },
+      ],
+    })
+
+    await reuseConfig(task({
+      apiProvider: 'openai',
+      apiProfileId: openaiProfile.id,
+      prompt: taskPrompt,
+      inputImageIds: [imageA.id, imageB.id],
+    }))
+
+    const state = useStore.getState()
+    expect(state.inputImages.map((img) => img.id)).toEqual([imageA.id, imageB.id])
+    expect(state.prompt).toBe(taskPrompt)
   })
 
   it('clears temporary reuse when switching current settings to the reused API profile', async () => {

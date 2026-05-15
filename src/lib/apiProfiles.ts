@@ -449,6 +449,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     reuseTaskApiProfileTemporarily: typeof record.reuseTaskApiProfileTemporarily === 'boolean' ? record.reuseTaskApiProfileTemporarily : false,
     alwaysShowRetryButton: typeof record.alwaysShowRetryButton === 'boolean' ? record.alwaysShowRetryButton : false,
     enableGlassEffects: typeof record.enableGlassEffects === 'boolean' ? record.enableGlassEffects : true,
+    enterSubmit: typeof record.enterSubmit === 'boolean' ? record.enterSubmit : false,
     profiles,
     activeProfileId,
   }
@@ -726,4 +727,5 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   reuseTaskApiProfileTemporarily: false,
   alwaysShowRetryButton: false,
   enableGlassEffects: true,
+  enterSubmit: false,
 })

@@ -30,7 +30,7 @@ import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdo
 import Select from './Select'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
-import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon } from './icons'
+import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -283,6 +283,7 @@ export default function SettingsModal() {
   const profileMenuTriggerRef = useRef<HTMLButtonElement>(null)
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
+  const duplicateProfileTooltipTimerRef = useRef<number | null>(null)
   const llmPromptTooltipTimerRef = useRef<number | null>(null)
   const settingsScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
@@ -302,6 +303,7 @@ export default function SettingsModal() {
   const [customProviderForm, setCustomProviderForm] = useState<CustomProviderForm>(createDefaultCustomProviderForm())
   const [customProviderImportError, setCustomProviderImportError] = useState<string | null>(null)
   const [profileImportUrlTooltipVisible, setProfileImportUrlTooltipVisible] = useState(false)
+  const [duplicateProfileTooltipVisible, setDuplicateProfileTooltipVisible] = useState(false)
   const [llmPromptTooltipVisible, setLlmPromptTooltipVisible] = useState(false)
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'data' | 'about'>('general')
   const [exportConfig, setExportConfig] = useState(true)
@@ -430,6 +432,7 @@ export default function SettingsModal() {
 
   useEffect(() => () => {
     if (profileImportUrlTooltipTimerRef.current != null) window.clearTimeout(profileImportUrlTooltipTimerRef.current)
+    if (duplicateProfileTooltipTimerRef.current != null) window.clearTimeout(duplicateProfileTooltipTimerRef.current)
     if (llmPromptTooltipTimerRef.current != null) window.clearTimeout(llmPromptTooltipTimerRef.current)
   }, [])
 
@@ -458,6 +461,13 @@ export default function SettingsModal() {
     if (profileImportUrlTooltipTimerRef.current != null) {
       window.clearTimeout(profileImportUrlTooltipTimerRef.current)
       profileImportUrlTooltipTimerRef.current = null
+    }
+  }
+
+  const clearDuplicateProfileTooltipTimer = () => {
+    if (duplicateProfileTooltipTimerRef.current != null) {
+      window.clearTimeout(duplicateProfileTooltipTimerRef.current)
+      duplicateProfileTooltipTimerRef.current = null
     }
   }
 
@@ -661,6 +671,23 @@ export default function SettingsModal() {
         ...draft, 
         profiles: [...draft.profiles, profile],
         activeProfileId: profile.id
+    })
+    commitSettings(nextDraft)
+    setShowProfileMenu(false)
+  }
+
+  const duplicateActiveProfile = () => {
+    setReusedTaskApiProfile(null)
+    setDuplicateProfileTooltipVisible(false)
+    const profile: ApiProfile = {
+      ...activeProfile,
+      id: newId(activeProfile.provider === 'openai' ? 'openai' : 'profile'),
+      name: `${activeProfile.name}（复制）`,
+    }
+    const nextDraft = normalizeSettings({
+      ...draft,
+      profiles: [...draft.profiles, profile],
+      activeProfileId: profile.id,
     })
     commitSettings(nextDraft)
     setShowProfileMenu(false)
@@ -1080,6 +1107,25 @@ export default function SettingsModal() {
             <div className="flex-1 overflow-y-auto overscroll-contain custom-scrollbar p-5 sm:p-6">
             {activeTab === 'general' && (
               <div className="space-y-4">
+                <div className="hidden sm:block">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">任务提交方式</span>
+                    <div className="w-32">
+                      <Select
+                        value={draft.enterSubmit ? 'enter' : 'ctrl-enter'}
+                        onChange={(val) => commitSettings({ ...draft, enterSubmit: val === 'enter' })}
+                        options={[
+                          { label: 'Enter', value: 'enter' },
+                          { label: navigator.userAgent.includes('Mac') ? 'Cmd + Enter' : 'Ctrl + Enter', value: 'ctrl-enter' }
+                        ]}
+                        className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    选择 Enter 提交时，使用 Shift + Enter 换行；否则直接 Enter 换行。
+                  </div>
+                </div>
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">提交任务后清空输入框</span>
@@ -1216,10 +1262,36 @@ export default function SettingsModal() {
                         className="flex h-5 w-5 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
                         aria-label={`复制导入配置「${activeProfile.name}」的 URL`}
                       >
-                        <CopyIcon className="h-3.5 w-3.5" />
+                        <LinkIcon className="h-3.5 w-3.5" />
                       </button>
                       <ViewportTooltip visible={profileImportUrlTooltipVisible} className="whitespace-nowrap">
                         复制导入 URL
+                      </ViewportTooltip>
+                    </span>
+                    <span className="relative inline-flex">
+                      <button
+                        type="button"
+                        onClick={duplicateActiveProfile}
+                        onMouseEnter={() => setDuplicateProfileTooltipVisible(true)}
+                        onMouseLeave={() => setDuplicateProfileTooltipVisible(false)}
+                        onFocus={() => setDuplicateProfileTooltipVisible(true)}
+                        onBlur={() => setDuplicateProfileTooltipVisible(false)}
+                        onTouchStart={() => {
+                          clearDuplicateProfileTooltipTimer()
+                          duplicateProfileTooltipTimerRef.current = window.setTimeout(() => {
+                            setDuplicateProfileTooltipVisible(true)
+                            duplicateProfileTooltipTimerRef.current = null
+                          }, 450)
+                        }}
+                        onTouchEnd={clearDuplicateProfileTooltipTimer}
+                        onTouchCancel={clearDuplicateProfileTooltipTimer}
+                        className="flex h-5 w-5 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
+                        aria-label={`复制一份配置「${activeProfile.name}」`}
+                      >
+                        <CopyIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <ViewportTooltip visible={duplicateProfileTooltipVisible} className="whitespace-nowrap">
+                        复制当前配置
                       </ViewportTooltip>
                     </span>
                   </div>
@@ -1318,7 +1390,7 @@ export default function SettingsModal() {
                                     aria-label={`复制导入配置「${profile.name}」的 URL`}
                                     title="复制导入 URL"
                                   >
-                                    <CopyIcon className="h-3.5 w-3.5" />
+                                    <LinkIcon className="h-3.5 w-3.5" />
                                   </button>
                                   {draft.profiles.length > 1 && (
                                     <button
@@ -1711,12 +1783,23 @@ export default function SettingsModal() {
                     href="https://github.com/CookSleep/gpt_image_playground/issues"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
+                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
                   >
                     <svg className="h-4 w-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                     </svg>
                     反馈问题
+                  </a>
+                  <a
+                    href="https://www.ifdian.net/a/cooksleep"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gray-100/80 px-5 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white"
+                  >
+                    <svg className="h-4 w-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                    </svg>
+                    赞助作者
                   </a>
                   {authUser && (
                     <button
@@ -1796,6 +1879,7 @@ export default function SettingsModal() {
                         onTouchCancel={clearLlmPromptTooltipTimer}
                         className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm border border-gray-200/80 transition hover:bg-gray-50 hover:text-gray-900 dark:bg-white/[0.05] dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
                       >
+                        <LinkIcon className="h-3.5 w-3.5" />
                         复制生成提示词
                       </button>
                       <ViewportTooltip visible={llmPromptTooltipVisible} className="w-56 whitespace-normal text-center">

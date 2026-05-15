@@ -804,6 +804,7 @@ export default function MaskEditorModal() {
           id: workingTargetId,
           dataUrl: sourceDataUrl,
         }),
+        { equivalentImageIds: { [savingImageId]: workingTargetId } },
       )
       setMaskDraft({
         targetImageId: workingTargetId,

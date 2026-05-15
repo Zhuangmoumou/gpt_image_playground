@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   reuseTaskApiProfileTemporarily: false,
   alwaysShowRetryButton: false,
   enableGlassEffects: true,
+  enterSubmit: false,
   activeProfileId: 'default-openai',
   profiles: [{
     id: 'default-openai',

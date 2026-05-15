@@ -4,6 +4,7 @@ import { requireUser } from '../auth'
 import { callServerImageApi } from '../lib/generate'
 import { getTaskForUser, upsertTask } from '../lib/tasks'
 import { getUnknownErrorMessage } from '../../src/lib/imageApiShared'
+import { replaceImageMentionsForApi } from '../../src/lib/promptImageMentions'
 import { fileToDataUrl, getImageForUser, saveImageDataUrl } from '../storage/images'
 import { config } from '../config'
 
@@ -35,7 +36,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
       const result = await callServerImageApi({
         settings: body.settings,
-        prompt: task.prompt,
+        prompt: replaceImageMentionsForApi(task.prompt, inputImageDataUrls.length),
         params: task.params,
         inputImageDataUrls,
         maskDataUrl,

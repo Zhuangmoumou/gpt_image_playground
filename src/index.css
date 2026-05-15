@@ -280,3 +280,76 @@ input[type="number"] {
     font-size: 16px;
   }
 }
+
+/* contentEditable 中的 @图N 胶囊 tag */
+.mention-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  margin: 0 2px;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #dbeafe;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: middle;
+  user-select: all;
+  cursor: default;
+  transition: all 0.15s ease;
+}
+
+.mention-tag::selection,
+.mention-tag *::selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+[contenteditable]::selection,
+[contenteditable] *::selection {
+  background: rgba(37, 99, 235, 0.2);
+  color: inherit;
+}
+
+.mention-tag:hover {
+  background: #dbeafe;
+}
+
+.mention-tag.selected {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mention-tag {
+    background: rgba(59, 130, 246, 0.12);
+    color: #93c5fd;
+    border-color: rgba(59, 130, 246, 0.2);
+  }
+
+  .mention-tag::selection,
+  .mention-tag *::selection {
+    background: transparent !important;
+    color: inherit !important;
+  }
+
+  [contenteditable]::selection,
+  [contenteditable] *::selection {
+    background: rgba(59, 130, 246, 0.3);
+    color: inherit;
+  }
+
+  .mention-tag:hover {
+    background: rgba(59, 130, 246, 0.2);
+  }
+
+  .mention-tag.selected {
+    background: #3b82f6;
+    color: #ffffff;
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+  }
+}
