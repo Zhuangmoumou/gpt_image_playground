@@ -49,6 +49,16 @@ export async function taskRoutes(app: FastifyInstance) {
     return { tasks: listTasks(user.id) }
   })
 
+  app.get('/api/tasks/:id', async (request, reply) => {
+    const user = await requireUser(request, reply)
+    if (!user) return
+
+    const { id } = request.params as { id: string }
+    const task = getTaskForUser(user.id, id)
+    if (!task) return reply.code(404).send({ error: '任务不存在' })
+    return { task }
+  })
+
   app.post('/api/tasks', async (request, reply) => {
     const user = await requireUser(request, reply)
     if (!user) return

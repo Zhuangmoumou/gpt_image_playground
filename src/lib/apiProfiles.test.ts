@@ -15,6 +15,43 @@ import {
   switchApiProfileProvider,
 } from './apiProfiles'
 
+describe('server-side request profile setting', () => {
+  it('defaults new profiles to server-side requests', () => {
+    expect(createDefaultOpenAIProfile().useServerSideRequests).toBe(true)
+    expect(createDefaultFalProfile().useServerSideRequests).toBe(true)
+    expect(DEFAULT_SETTINGS.profiles[0].useServerSideRequests).toBe(true)
+  })
+
+  it('normalizes legacy profiles to server-side requests', () => {
+    const settings = normalizeSettings({
+      profiles: [{
+        id: 'legacy-profile',
+        name: 'Legacy',
+        provider: 'openai',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'key',
+        model: DEFAULT_IMAGES_MODEL,
+        timeout: 300,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy-profile',
+    })
+
+    expect(settings.profiles[0].useServerSideRequests).toBe(true)
+  })
+
+  it('preserves server-side request setting when switching providers', () => {
+    const profile = createDefaultOpenAIProfile({ useServerSideRequests: false })
+    const switched = switchApiProfileProvider(profile, 'fal')
+    const switchedBack = switchApiProfileProvider(switched, 'openai')
+
+    expect(switched.useServerSideRequests).toBe(false)
+    expect(switchedBack.useServerSideRequests).toBe(false)
+  })
+})
+
 describe('mergeImportedSettings', () => {
   it('replaces the default OpenAI profile with legacy imported settings when current settings are untouched', () => {
     const merged = mergeImportedSettings(DEFAULT_SETTINGS, {

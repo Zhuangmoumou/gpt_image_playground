@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { StoredImage, StoredImageThumbnail, TaskRecord } from './types'
@@ -8,8 +8,19 @@ vi.mock('./lib/serverApi', async () => {
   return {
     ...actual,
     saveUserSettings: vi.fn(async (settings, params) => ({ settings, params })),
+    generateServerTask: vi.fn(),
+    getServerTask: vi.fn(),
+    saveServerTask: vi.fn(async (task) => ({ task })),
+    patchServerTask: vi.fn(async (id, patch) => ({ task: { id, ...patch } })),
+    uploadServerImage: vi.fn(async (_dataUrl: string, source = 'upload') => ({
+      image: { id: `${source}-image`, url: `/api/images/${source}-image`, createdAt: 1, source },
+    })),
   }
 })
+
+vi.mock('./lib/api', () => ({
+  callImageApi: vi.fn(),
+}))
 
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
@@ -59,7 +70,8 @@ vi.mock('./lib/db', () => {
   }
 })
 import { clearImages, putImage } from './lib/db'
-import { saveUserSettings } from './lib/serverApi'
+import { callImageApi } from './lib/api'
+import { generateServerTask, getServerTask, patchServerTask, saveServerTask, saveUserSettings, uploadServerImage } from './lib/serverApi'
 import { editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
@@ -176,9 +188,10 @@ describe('interrupted OpenAI running tasks', () => {
     const openAIRunning = task({ id: 'openai-running', apiProvider: 'openai', status: 'running', createdAt: 2_000, finishedAt: null, elapsed: null })
     const falRunning = task({ id: 'fal-running', apiProvider: 'fal', status: 'running', createdAt: 3_000, finishedAt: null, elapsed: null })
     const customAsyncRunning = task({ id: 'custom-running', apiProvider: 'custom-provider', customTaskId: 'task-1', status: 'running', createdAt: 4_000, finishedAt: null, elapsed: null })
+    const serverSideRunning = task({ id: 'server-running', apiProvider: 'openai', serverSideRequest: true, status: 'running', createdAt: 5_000, finishedAt: null, elapsed: null })
     const doneTask = task({ id: 'done-task', apiProvider: 'openai', status: 'done' })
 
-    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, customAsyncRunning, doneTask], now)
+    const result = markInterruptedOpenAIRunningTasks([legacyRunning, openAIRunning, falRunning, customAsyncRunning, serverSideRunning, doneTask], now)
 
     expect(result.interruptedTasks.map((item) => item.id)).toEqual(['legacy-running', 'openai-running'])
     expect(result.tasks.find((item) => item.id === 'legacy-running')).toMatchObject({
@@ -195,6 +208,7 @@ describe('interrupted OpenAI running tasks', () => {
     })
     expect(result.tasks.find((item) => item.id === 'fal-running')).toEqual(falRunning)
     expect(result.tasks.find((item) => item.id === 'custom-running')).toEqual(customAsyncRunning)
+    expect(result.tasks.find((item) => item.id === 'server-running')).toEqual(serverSideRunning)
     expect(result.tasks.find((item) => item.id === 'done-task')).toEqual(doneTask)
   })
 })
@@ -289,6 +303,178 @@ describe('user settings server save queue', () => {
     await flushPromises()
 
     expect(showToast).toHaveBeenCalledWith('登录已失效，设置未保存', 'error')
+  })
+})
+
+describe('task request execution mode', () => {
+  const mockedCallImageApi = vi.mocked(callImageApi)
+  const mockedGenerateServerTask = vi.mocked(generateServerTask)
+  const mockedGetServerTask = vi.mocked(getServerTask)
+  const mockedSaveServerTask = vi.mocked(saveServerTask)
+  const mockedUploadServerImage = vi.mocked(uploadServerImage)
+  const mockedPatchServerTask = vi.mocked(patchServerTask)
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    mockedSaveServerTask.mockImplementation(async (task) => ({ task }))
+    mockedUploadServerImage.mockImplementation(async (_dataUrl: string, source = 'upload') => ({
+      image: { id: `${source}-image`, url: `/api/images/${source}-image`, createdAt: 1, source },
+    }))
+    mockedPatchServerTask.mockImplementation(async (id, patch) => ({ task: { id, ...patch } as TaskRecord }))
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [createDefaultOpenAIProfile({ id: 'openai-profile', apiKey: 'test-key' })],
+        activeProfileId: 'openai-profile',
+      }),
+      prompt: '生成一只猫',
+      inputImages: [],
+      maskDraft: null,
+      params: { ...DEFAULT_PARAMS },
+      tasks: [],
+      showSettings: false,
+      toast: null,
+      authUser: null,
+      showToast: vi.fn(),
+      setConfirmDialog: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('uses the server generation endpoint and polls when server-side requests are enabled', async () => {
+    mockedGenerateServerTask.mockImplementation(async (taskId) => {
+      const current = useStore.getState().tasks.find((item) => item.id === taskId)
+      return {
+        task: {
+          ...current!,
+          serverSideRequest: true,
+          status: 'running',
+          error: null,
+          finishedAt: null,
+          elapsed: null,
+        },
+      }
+    })
+    mockedGetServerTask
+      .mockImplementationOnce(async (taskId) => {
+        const current = useStore.getState().tasks.find((item) => item.id === taskId)
+        const { serverSideRequest: _serverSideRequest, ...taskWithoutServerFlag } = current!
+        return {
+          task: {
+            ...taskWithoutServerFlag,
+            status: 'running',
+            error: null,
+            finishedAt: null,
+            elapsed: null,
+          },
+        }
+      })
+      .mockImplementationOnce(async (taskId) => {
+        const current = useStore.getState().tasks.find((item) => item.id === taskId)
+        return {
+          task: {
+            ...current!,
+            outputImages: ['server-output'],
+            status: 'done',
+            error: null,
+            finishedAt: 2,
+            elapsed: 1,
+          },
+        }
+      })
+
+    await submitTask()
+    await flushPromises()
+
+    expect(mockedGenerateServerTask).toHaveBeenCalledTimes(1)
+    expect(mockedCallImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0]).toMatchObject({ status: 'running', serverSideRequest: true })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+
+    expect(mockedGetServerTask).toHaveBeenCalledTimes(1)
+    expect(mockedGetServerTask).toHaveBeenLastCalledWith(expect.any(String), { poll: true })
+    expect(useStore.getState().tasks[0]).toMatchObject({ status: 'running', serverSideRequest: true })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+
+    expect(mockedGetServerTask).toHaveBeenCalledTimes(2)
+    expect(useStore.getState().tasks[0]).toMatchObject({ status: 'done', outputImages: ['server-output'] })
+  })
+
+  it('shows backend generation errors returned by polling', async () => {
+    mockedGenerateServerTask.mockImplementation(async (taskId) => {
+      const current = useStore.getState().tasks.find((item) => item.id === taskId)
+      return {
+        task: {
+          ...current!,
+          serverSideRequest: true,
+          status: 'running',
+          error: null,
+          finishedAt: null,
+          elapsed: null,
+        },
+      }
+    })
+    mockedGetServerTask.mockImplementation(async (taskId) => {
+      const current = useStore.getState().tasks.find((item) => item.id === taskId)
+      return {
+        task: {
+          ...current!,
+          status: 'error',
+          error: '上游接口失败',
+          finishedAt: 2,
+          elapsed: 1,
+        },
+      }
+    })
+
+    await submitTask()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+
+    const task = useStore.getState().tasks[0]
+    expect(task).toMatchObject({ status: 'error', error: '上游接口失败' })
+    expect(useStore.getState().detailTaskId).toBe(task.id)
+  })
+
+  it('uses client direct requests when server-side requests are disabled', async () => {
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [createDefaultOpenAIProfile({ id: 'openai-profile', apiKey: 'test-key', useServerSideRequests: false })],
+        activeProfileId: 'openai-profile',
+      }),
+    })
+    mockedCallImageApi.mockResolvedValue({
+      images: ['data:image/png;base64,out'],
+      actualParams: { size: '1024x1024' },
+      revisedPrompts: ['revised prompt'],
+      rawImageUrls: ['https://example.com/out.png'],
+    })
+
+    await submitTask()
+    await flushPromises()
+
+    expect(mockedGenerateServerTask).not.toHaveBeenCalled()
+    expect(mockedCallImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: '生成一只猫',
+      inputImageDataUrls: [],
+      maskDataUrl: undefined,
+    }))
+    expect(mockedUploadServerImage).toHaveBeenCalledWith('data:image/png;base64,out', 'generated')
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      status: 'done',
+      outputImages: ['generated-image'],
+      rawImageUrls: ['https://example.com/out.png'],
+    })
   })
 })
 

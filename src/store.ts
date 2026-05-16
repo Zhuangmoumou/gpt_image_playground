@@ -11,8 +11,10 @@ import type {
 } from './types'
 import { DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { callImageApi } from './lib/api'
+import { fetchImageUrlAsDataUrl } from './lib/imageApiShared'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
-import { remapImageMentionsForOrder } from './lib/promptImageMentions'
+import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
   CURRENT_THUMBNAIL_VERSION,
   getImage,
@@ -30,6 +32,7 @@ import {
   deleteServerTasks,
   generateServerTask,
   getImageUrl,
+  getServerTask,
   getUserSettings,
   listServerTasks,
   patchServerTask,
@@ -58,9 +61,12 @@ const MAX_THUMBNAIL_CACHE_ENTRIES = 80
 const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
+const SERVER_TASK_POLL_MS = 5_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const serverTaskPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const serverTaskPollIds = new Set<string>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const OPENAI_INTERRUPTED_ERROR = '请求中断'
 
@@ -784,6 +790,10 @@ function isRunningOpenAITask(task: TaskRecord) {
   return task.status === 'running' && isOpenAITask(task)
 }
 
+function isRunningServerSideTask(task: TaskRecord) {
+  return task.status === 'running' && (task.serverSideRequest === true || serverTaskPollIds.has(task.id))
+}
+
 function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasInputImages: boolean) {
   const customProvider = getCustomProviderDefinition(settings, provider)
   if (!customProvider?.poll) return false
@@ -794,7 +804,7 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
+    if (!isRunningOpenAITask(task) || task.customTaskId || task.serverSideRequest) return task
 
     const updated: TaskRecord = {
       ...task,
@@ -1027,6 +1037,84 @@ function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_M
   customRecoveryTimers.set(taskId, timer)
 }
 
+function clearServerTaskPollTimer(taskId: string) {
+  const timer = serverTaskPollTimers.get(taskId)
+  if (timer) clearTimeout(timer)
+  serverTaskPollTimers.delete(taskId)
+  serverTaskPollIds.delete(taskId)
+}
+
+function scheduleServerTaskPoll(taskId: string, delayMs = SERVER_TASK_POLL_MS) {
+  if (serverTaskPollTimers.has(taskId)) return
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task || task.status !== 'running') return
+  serverTaskPollIds.add(taskId)
+
+  const timer = setTimeout(() => {
+    serverTaskPollTimers.delete(taskId)
+    pollServerTask(taskId)
+  }, delayMs)
+  serverTaskPollTimers.set(taskId, timer)
+}
+
+function scheduleRunningServerTaskPolls(tasks: TaskRecord[]) {
+  for (const task of tasks) {
+    if (isRunningServerSideTask(task)) scheduleServerTaskPoll(task.id)
+  }
+}
+
+async function applyServerTaskUpdate(taskId: string, task: TaskRecord) {
+  if (task.status === 'done') {
+    await Promise.all(task.outputImages.map((id) => cacheServerImageReference(id)))
+  }
+  const previous = useStore.getState().tasks.find((item) => item.id === taskId)
+  const nextTask = task.status === 'running' && serverTaskPollIds.has(taskId)
+    ? { ...task, serverSideRequest: true }
+    : task
+  updateTaskInStore(taskId, nextTask, { persist: false })
+  if (previous?.status === 'running' && task.status === 'done') {
+    useStore.getState().showToast(`生成完成，共 ${task.outputImages.length} 张图片`, 'success')
+    const currentMask = useStore.getState().maskDraft
+    if (
+      currentMask &&
+      currentMask.targetImageId === task.maskTargetImageId &&
+      task.maskImageId
+    ) {
+      useStore.getState().clearMaskDraft()
+    }
+  }
+  if (previous?.status === 'running' && task.status === 'error') {
+    useStore.getState().setDetailTaskId(taskId)
+  }
+  if (task.status !== 'running') clearServerTaskPollTimer(taskId)
+}
+
+async function pollServerTask(taskId: string) {
+  const localTask = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!localTask || !isRunningServerSideTask(localTask)) return
+
+  try {
+    const { task } = await getServerTask(taskId, { poll: true })
+    await applyServerTaskUpdate(taskId, task)
+    if (task.status === 'running') scheduleServerTaskPoll(taskId)
+  } catch (err) {
+    if (err && typeof err === 'object' && 'status' in err && (err as { status?: unknown }).status === 404) {
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '服务端任务不存在',
+        falRecoverable: false,
+        customRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - localTask.createdAt,
+      })
+      useStore.getState().setDetailTaskId(taskId)
+      clearServerTaskPollTimer(taskId)
+      return
+    }
+    scheduleServerTaskPoll(taskId, SERVER_TASK_POLL_MS)
+  }
+}
+
 function hasActualParams(params: Partial<TaskParams> | undefined): params is Partial<TaskParams> {
   return Boolean(params && Object.keys(params).length > 0)
 }
@@ -1158,6 +1246,7 @@ export async function initStore() {
   const { tasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks)
   await Promise.all(interruptedTasks.map((task) => patchServerTask(task.id, task)))
   useStore.getState().setTasks(tasks)
+  scheduleRunningServerTaskPolls(tasks)
   showSupportPromptForExistingLocalData(tasks)
 
   const referencedIds = new Set<string>()
@@ -1311,6 +1400,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     apiProfileId: activeProfile.id,
     apiProfileName: activeProfile.name,
     apiModel: activeProfile.model,
+    serverSideRequest: activeProfile.useServerSideRequests !== false,
     inputImageIds: orderedInputImages.map((i) => i.id),
     maskTargetImageId,
     maskImageId,
@@ -1337,6 +1427,66 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   void executeTask(taskId)
 }
 
+async function loadImageDataUrlForApi(imageId: string): Promise<string> {
+  const cached = getCachedImage(imageId)
+  const stored = await getImage(imageId)
+  const dataUrl = stored?.dataUrl ?? cached ?? await cacheServerImageReference(imageId)
+  return dataUrl.startsWith('data:') ? dataUrl : fetchImageUrlAsDataUrl(dataUrl, 'image/png')
+}
+
+async function completeClientGeneratedTask(taskId: string, result: Awaited<ReturnType<typeof callImageApi>>) {
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task) return
+
+  const outputImages: string[] = []
+  for (const dataUrl of result.images) {
+    const uploaded = await uploadServerImage(dataUrl, 'generated')
+    await putImage({
+      id: uploaded.image.id,
+      dataUrl: uploaded.image.url,
+      createdAt: uploaded.image.createdAt,
+      source: 'generated',
+    })
+    cacheImage(uploaded.image.id, uploaded.image.url)
+    outputImages.push(uploaded.image.id)
+  }
+
+  const shouldStoreApiResponseMetadata = task.apiProvider !== 'fal'
+  const actualParamsByImage = shouldStoreApiResponseMetadata ? result.actualParamsList?.reduce<Record<string, Partial<TaskParams>>>((acc, params, index) => {
+    const imageId = outputImages[index]
+    if (imageId && params && Object.keys(params).length > 0) acc[imageId] = params
+    return acc
+  }, {}) : undefined
+  const revisedPromptByImage = shouldStoreApiResponseMetadata ? result.revisedPrompts?.reduce<Record<string, string>>((acc, prompt, index) => {
+    const imageId = outputImages[index]
+    if (imageId && prompt?.trim()) acc[imageId] = prompt
+    return acc
+  }, {}) : undefined
+
+  updateTaskInStore(taskId, {
+    outputImages,
+    actualParams: shouldStoreApiResponseMetadata ? { ...result.actualParams, n: outputImages.length } : undefined,
+    actualParamsByImage: actualParamsByImage && Object.keys(actualParamsByImage).length ? actualParamsByImage : undefined,
+    revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length ? revisedPromptByImage : undefined,
+    rawImageUrls: result.rawImageUrls,
+    status: 'done',
+    error: null,
+    falRecoverable: false,
+    customRecoverable: false,
+    finishedAt: Date.now(),
+    elapsed: Date.now() - task.createdAt,
+  })
+  useStore.getState().showToast(`生成完成，共 ${outputImages.length} 张图片`, 'success')
+  const currentMask = useStore.getState().maskDraft
+  if (
+    currentMask &&
+    currentMask.targetImageId === task.maskTargetImageId &&
+    task.maskImageId
+  ) {
+    useStore.getState().clearMaskDraft()
+  }
+}
+
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -1355,28 +1505,49 @@ async function executeTask(taskId: string) {
   }
   const activeProfile = taskProfile ?? getActiveApiProfile(settings)
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
+  const useServerSideRequests = activeProfile.useServerSideRequests !== false
 
   try {
-    const { task: saved } = await generateServerTask(taskId, requestSettings)
-    if (!saved) return
+    if (useServerSideRequests) {
+      const { task: queued } = await generateServerTask(taskId, requestSettings)
+      if (!queued) return
 
-    await Promise.all(saved.outputImages.map((id) => cacheServerImageReference(id)))
-    updateTaskInStore(taskId, saved, { persist: false })
-    useStore.getState().showToast(`生成完成，共 ${saved.outputImages.length} 张图片`, 'success')
-    const currentMask = useStore.getState().maskDraft
-    if (
-      currentMask &&
-      currentMask.targetImageId === task.maskTargetImageId &&
-      task.maskImageId
-    ) {
-      useStore.getState().clearMaskDraft()
+      await applyServerTaskUpdate(taskId, queued)
+      if (isRunningServerSideTask(queued)) scheduleServerTaskPoll(taskId)
+      return
     }
+
+    const inputImageDataUrls = await Promise.all(task.inputImageIds.map((id) => loadImageDataUrlForApi(id)))
+    const maskDataUrl = task.maskImageId ? await loadImageDataUrlForApi(task.maskImageId) : undefined
+    const result = await callImageApi({
+      settings: requestSettings,
+      prompt: replaceImageMentionsForApi(task.prompt, inputImageDataUrls.length),
+      params: task.params,
+      inputImageDataUrls,
+      maskDataUrl,
+      onFalRequestEnqueued: (requestInfo) => {
+        updateTaskInStore(taskId, {
+          falRequestId: requestInfo.requestId,
+          falEndpoint: requestInfo.endpoint,
+          falRecoverable: false,
+        })
+      },
+      onCustomTaskEnqueued: (taskInfo) => {
+        updateTaskInStore(taskId, {
+          customTaskId: taskInfo.taskId,
+          customRecoverable: false,
+        })
+      },
+    })
+    await completeClientGeneratedTask(taskId, result)
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
     const message = err instanceof Error ? err.message : String(err)
+    const hint = useServerSideRequests ? null : getApiRequestNetworkErrorHint(err, task, requestSettings)
     updateTaskInStore(taskId, {
       status: 'error',
-      error: message,
+      error: [message, hint].filter(Boolean).join('\n'),
+      ...getRawErrorPayload(err),
       falRecoverable: false,
       customRecoverable: false,
       finishedAt: Date.now(),

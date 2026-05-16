@@ -84,6 +84,16 @@ function shouldUseSecureSessionCookie(request: FastifyRequest) {
   return process.env.NODE_ENV === 'production'
 }
 
+function sessionCookieOptions(request: FastifyRequest) {
+  return {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: shouldUseSecureSessionCookie(request),
+    path: '/',
+    signed: true,
+  }
+}
+
 export function createSession(request: FastifyRequest, reply: FastifyReply, userId: string) {
   const now = Date.now()
   const session = {
@@ -98,19 +108,17 @@ export function createSession(request: FastifyRequest, reply: FastifyReply, user
     VALUES (@id, @user_id, @expires_at, @created_at, @last_seen_at)
   `).run(session)
   reply.setCookie(SESSION_COOKIE, session.id, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: shouldUseSecureSessionCookie(request),
-    path: '/',
+    ...sessionCookieOptions(request),
     maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
-    signed: true,
   })
 }
 
 export function clearSession(request: FastifyRequest, reply: FastifyReply) {
   const sessionId = getSessionId(request)
   if (sessionId) db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
-  reply.clearCookie(SESSION_COOKIE, { path: '/', secure: shouldUseSecureSessionCookie(request) })
+  const options = sessionCookieOptions(request)
+  reply.clearCookie(SESSION_COOKIE, options)
+  if (options.secure) reply.clearCookie(SESSION_COOKIE, { ...options, secure: false })
 }
 
 function getSessionId(request: FastifyRequest) {

@@ -13,12 +13,17 @@ function normalizeOrigin(value: string) {
   }
 }
 
+function firstHeaderValue(value: string | string[] | undefined) {
+  const raw = Array.isArray(value) ? value[0] : value
+  return raw?.split(',')[0]?.trim() || ''
+}
+
 function getRequestOrigin(request: FastifyRequest) {
-  const host = request.headers.host
+  const forwardedHost = firstHeaderValue(request.headers['x-forwarded-host'])
+  const host = forwardedHost || firstHeaderValue(request.headers.host)
   if (!host) return ''
-  const protoHeader = request.headers['x-forwarded-proto']
-  const protocol = Array.isArray(protoHeader) ? protoHeader[0] : protoHeader
-  return `${protocol || 'http'}://${host}`.replace(/\/+$/, '')
+  const protocol = firstHeaderValue(request.headers['x-forwarded-proto']) || 'http'
+  return `${protocol}://${host}`.replace(/\/+$/, '')
 }
 
 function isLocalDevelopmentOrigin(origin: string) {

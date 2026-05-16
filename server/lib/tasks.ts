@@ -20,6 +20,7 @@ export function taskFromRow(row: TaskRow): TaskRecord {
     apiProfileId: row.api_profile_id ?? undefined,
     apiProfileName: row.api_profile_name ?? undefined,
     apiModel: row.api_model ?? undefined,
+    serverSideRequest: Boolean(row.server_side_request),
     falRequestId: row.fal_request_id ?? undefined,
     falEndpoint: row.fal_endpoint ?? undefined,
     falRecoverable: Boolean(row.fal_recoverable),
@@ -63,6 +64,7 @@ export function upsertTask(userId: string, task: TaskRecord) {
     api_profile_id: task.apiProfileId ?? null,
     api_profile_name: task.apiProfileName ?? null,
     api_model: task.apiModel ?? null,
+    server_side_request: task.serverSideRequest ? 1 : 0,
     fal_request_id: task.falRequestId ?? null,
     fal_endpoint: task.falEndpoint ?? null,
     fal_recoverable: task.falRecoverable ? 1 : 0,
@@ -85,13 +87,13 @@ export function upsertTask(userId: string, task: TaskRecord) {
   db.prepare(`
     INSERT INTO tasks (
       id, user_id, prompt, params_json, api_provider, api_profile_id, api_profile_name, api_model,
-      fal_request_id, fal_endpoint, fal_recoverable, custom_task_id, custom_recoverable,
+      server_side_request, fal_request_id, fal_endpoint, fal_recoverable, custom_task_id, custom_recoverable,
       actual_params_json, actual_params_by_image_json, revised_prompt_by_image_json,
       raw_image_urls_json, raw_response_payload, status, error,
       created_at, finished_at, elapsed_ms, is_favorite, updated_at
     ) VALUES (
       @id, @user_id, @prompt, @params_json, @api_provider, @api_profile_id, @api_profile_name, @api_model,
-      @fal_request_id, @fal_endpoint, @fal_recoverable, @custom_task_id, @custom_recoverable,
+      @server_side_request, @fal_request_id, @fal_endpoint, @fal_recoverable, @custom_task_id, @custom_recoverable,
       @actual_params_json, @actual_params_by_image_json, @revised_prompt_by_image_json,
       @raw_image_urls_json, @raw_response_payload, @status, @error,
       @created_at, @finished_at, @elapsed_ms, @is_favorite, @updated_at
@@ -103,6 +105,7 @@ export function upsertTask(userId: string, task: TaskRecord) {
       api_profile_id = excluded.api_profile_id,
       api_profile_name = excluded.api_profile_name,
       api_model = excluded.api_model,
+      server_side_request = excluded.server_side_request,
       fal_request_id = excluded.fal_request_id,
       fal_endpoint = excluded.fal_endpoint,
       fal_recoverable = excluded.fal_recoverable,

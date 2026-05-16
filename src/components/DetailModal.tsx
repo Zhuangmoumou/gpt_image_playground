@@ -348,8 +348,16 @@ export default function DetailModal() {
                 }
                 alt=""
               />
-              <div data-selectable-text className="absolute top-[15px] flex items-center gap-1.5" style={{ left: imageLabelLeft }}>
-                {currentImageRatio && currentImageSize ? (
+              <div data-selectable-text className="absolute top-[15px] flex flex-wrap items-center gap-1.5" style={{ left: imageLabelLeft }}>
+                {formatDuration() && (
+                  <span className="flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {formatDuration()}
+                  </span>
+                )}
+                {currentImageRatio && currentImageSize && (
                   <>
                     <span className="bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
                       {currentImageRatio}
@@ -358,15 +366,6 @@ export default function DetailModal() {
                       {currentImageSize}
                     </span>
                   </>
-                ) : (
-                  formatDuration() && (
-                    <span className="flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      {formatDuration()}
-                    </span>
-                  )
                 )}
               </div>
               {outputLen > 1 && (

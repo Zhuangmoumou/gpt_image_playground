@@ -28,6 +28,7 @@ export default function Header() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [isPwaInstalled, setIsPwaInstalled] = useState(isInstalledPwa)
   const [syncing, setSyncing] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
 
   const installTooltip = useTooltip()
   const syncTooltip = useTooltip()
@@ -35,8 +36,16 @@ export default function Header() {
   const settingsTooltip = useTooltip()
 
   const handleLogout = async () => {
-    await logout()
+    if (loggingOut) return
+    setLoggingOut(true)
     await resetLocalAccountState()
+    try {
+      await logout()
+    } catch (err) {
+      showToast(`服务端会话清理失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setLoggingOut(false)
+    }
   }
 
   const handleSync = async () => {
@@ -143,9 +152,10 @@ export default function Header() {
                 <span>{authUser.username}</span>
                 <button
                   onClick={handleLogout}
-                  className="rounded-md px-2 py-1 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-900 dark:hover:text-gray-200"
+                  disabled={loggingOut}
+                  className="rounded-md px-2 py-1 transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-gray-900 dark:hover:text-gray-200"
                 >
-                  退出登录
+                  {loggingOut ? '退出中…' : '退出登录'}
                 </button>
               </div>
             )}

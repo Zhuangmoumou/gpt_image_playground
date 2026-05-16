@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     apiMode: 'images',
     codexCli: false,
     apiProxy: false,
+    useServerSideRequests: true,
   }],
 }
 

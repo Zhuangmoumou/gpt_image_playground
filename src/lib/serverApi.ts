@@ -15,6 +15,7 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers,
     credentials: 'same-origin',
+    cache: 'no-store',
   })
 
   if (!response.ok) {
@@ -84,6 +85,11 @@ export function saveUserSettings(settings: AppSettings, params: TaskParams) {
 
 export function listServerTasks() {
   return requestJson<{ tasks: TaskRecord[] }>('/api/tasks')
+}
+
+export function getServerTask(id: string, options: { poll?: boolean } = {}) {
+  const suffix = options.poll ? '?poll=1' : ''
+  return requestJson<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}${suffix}`)
 }
 
 export function saveServerTask(task: TaskRecord) {

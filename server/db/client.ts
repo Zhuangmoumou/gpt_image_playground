@@ -47,6 +47,7 @@ export function migrate() {
       api_profile_id TEXT,
       api_profile_name TEXT,
       api_model TEXT,
+      server_side_request INTEGER NOT NULL DEFAULT 0,
       fal_request_id TEXT,
       fal_endpoint TEXT,
       fal_recoverable INTEGER NOT NULL DEFAULT 0,
@@ -101,6 +102,7 @@ export function migrate() {
   `)
 
   ensureColumn('tasks', 'api_profile_id', 'TEXT')
+  ensureColumn('tasks', 'server_side_request', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('tasks', 'custom_task_id', 'TEXT')
   ensureColumn('tasks', 'custom_recoverable', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('tasks', 'raw_image_urls_json', 'TEXT')
@@ -134,6 +136,7 @@ export interface TaskRow {
   api_profile_id: string | null
   api_profile_name: string | null
   api_model: string | null
+  server_side_request: number
   fal_request_id: string | null
   fal_endpoint: string | null
   fal_recoverable: number

@@ -267,6 +267,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     apiMode: 'images',
     codexCli: false,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
+    useServerSideRequests: true,
     ...overrides,
   }
 }
@@ -283,6 +284,7 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
     apiMode: 'images',
     codexCli: false,
     apiProxy: false,
+    useServerSideRequests: true,
     ...overrides,
   }
 }
@@ -296,6 +298,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: profile.apiMode,
       codexCli: profile.codexCli,
       apiProxy: profile.apiProxy,
+      useServerSideRequests: profile.useServerSideRequests,
       responseFormatB64Json: profile.responseFormatB64Json,
     },
   }
@@ -310,6 +313,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: savedDraft?.apiMode ?? 'images',
       codexCli: false,
       apiProxy: false,
+      useServerSideRequests: savedDraft?.useServerSideRequests ?? profile.useServerSideRequests,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       providerDrafts,
     }
@@ -325,6 +329,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: savedDraft?.apiMode ?? 'images',
       codexCli: false,
       apiProxy: false,
+      useServerSideRequests: savedDraft?.useServerSideRequests ?? profile.useServerSideRequests,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       providerDrafts,
     }
@@ -338,6 +343,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     apiMode: savedDraft?.apiMode ?? profile.apiMode,
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
+    useServerSideRequests: savedDraft?.useServerSideRequests ?? profile.useServerSideRequests,
     responseFormatB64Json: savedDraft?.responseFormatB64Json,
     providerDrafts,
   }
@@ -360,6 +366,7 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
+    useServerSideRequests: typeof input.useServerSideRequests === 'boolean' ? input.useServerSideRequests : fallback.useServerSideRequests,
     responseFormatB64Json: input.responseFormatB64Json === true ? true : undefined,
   }
 }
@@ -393,6 +400,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
     apiMode,
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
+    useServerSideRequests: typeof record.useServerSideRequests === 'boolean' ? record.useServerSideRequests : defaults.useServerSideRequests,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
     providerDrafts: normalizeProviderDrafts(record.providerDrafts, customProviderIds),
   }
@@ -423,6 +431,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     apiMode: record.apiMode === 'responses' ? 'responses' : 'images',
     codexCli: Boolean(record.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : DEFAULT_OPENAI_API_PROXY,
+    useServerSideRequests: typeof record.useServerSideRequests === 'boolean' ? record.useServerSideRequests : true,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
   })
   const profiles = Array.isArray(record.profiles) && record.profiles.length

@@ -336,7 +336,7 @@ export default function SettingsModal() {
   const apiProxyLocked = isApiProxyLocked(apiProxyConfig)
   const activeProfile = draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? getActiveApiProfile(draft)
   const apiProxyChecked = activeProfile.provider === 'openai' && (apiProxyLocked || activeProfile.apiProxy)
-  const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && apiProxyChecked
+  const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && apiProxyChecked && !activeProfile.useServerSideRequests
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
@@ -1468,6 +1468,25 @@ export default function SettingsModal() {
                 </label>
               )}
 
+              <div className="block">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="block text-sm text-gray-600 dark:text-gray-300">使用服务端发起请求</span>
+                  <button
+                    type="button"
+                    onClick={() => updateActiveProfile({ useServerSideRequests: !activeProfile.useServerSideRequests }, true)}
+                    className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${activeProfile.useServerSideRequests ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                    role="switch"
+                    aria-checked={activeProfile.useServerSideRequests}
+                    aria-label="使用服务端发起请求"
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${activeProfile.useServerSideRequests ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                  </button>
+                </div>
+                <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                  开启后由服务端请求上游接口，浏览器只访问同源 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/api/generate</code>；关闭后由浏览器直连上游，可能受跨域限制。
+                </div>
+              </div>
+
               {activeProfile.provider === 'openai' && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
@@ -1508,7 +1527,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    {apiProxyLocked ? '当前部署已锁定 API 代理为开启，API URL 设置会被忽略。' : '当前部署提供同源代理时默认开启，可手动关闭。开启后用于解决浏览器跨域限制，API URL 设置会被忽略。'}
+                    {activeProfile.useServerSideRequests ? '服务端发起请求时不需要 API 代理；关闭服务端请求后，此项会影响浏览器直连。' : apiProxyLocked ? '当前部署已锁定 API 代理为开启，API URL 设置会被忽略。' : '浏览器直连上游时可用来解决跨域限制。开启后 API URL 设置会被忽略。'}
                   </div>
                 </div>
               )}

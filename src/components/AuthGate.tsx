@@ -51,6 +51,24 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     }
   }, [setAuthUser])
 
+  useEffect(() => {
+    if (loading || accountLoading || authUser) return
+    let cancelled = false
+
+    getServerConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setEnableRegistration(config.enableRegistration)
+          if (!config.enableRegistration) setMode('login')
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [accountLoading, authUser, loading])
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSubmitting(true)
