@@ -67,7 +67,24 @@ export function findUserByUsername(username: string) {
   return db.prepare('SELECT * FROM users WHERE username = ?').get(username) as UserRow | undefined
 }
 
-export function createSession(reply: FastifyReply, userId: string) {
+function shouldUseSecureSessionCookie(request: FastifyRequest) {
+  const origin = request.headers.origin
+  if (typeof origin === 'string') {
+    try {
+      return new URL(origin).protocol === 'https:'
+    } catch {
+      return process.env.NODE_ENV === 'production'
+    }
+  }
+
+  const protoHeader = request.headers['x-forwarded-proto']
+  const protocol = Array.isArray(protoHeader) ? protoHeader[0] : protoHeader
+  if (protocol) return protocol.split(',')[0]?.trim() === 'https'
+
+  return process.env.NODE_ENV === 'production'
+}
+
+export function createSession(request: FastifyRequest, reply: FastifyReply, userId: string) {
   const now = Date.now()
   const session = {
     id: crypto.randomBytes(32).toString('hex'),
@@ -83,7 +100,7 @@ export function createSession(reply: FastifyReply, userId: string) {
   reply.setCookie(SESSION_COOKIE, session.id, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: shouldUseSecureSessionCookie(request),
     path: '/',
     maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
     signed: true,
@@ -93,7 +110,7 @@ export function createSession(reply: FastifyReply, userId: string) {
 export function clearSession(request: FastifyRequest, reply: FastifyReply) {
   const sessionId = getSessionId(request)
   if (sessionId) db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
-  reply.clearCookie(SESSION_COOKIE, { path: '/' })
+  reply.clearCookie(SESSION_COOKIE, { path: '/', secure: shouldUseSecureSessionCookie(request) })
 }
 
 function getSessionId(request: FastifyRequest) {

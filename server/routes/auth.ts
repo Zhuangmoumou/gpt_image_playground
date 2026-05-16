@@ -16,7 +16,7 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.code(429).send({ error: limited.message })
       }
       const user = createUser(username, password)
-      createSession(reply, user.id)
+      createSession(request, reply, user.id)
       return { user }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -39,7 +39,7 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.code(401).send({ error: '用户名或密码错误' })
       }
       const user = { id: row.id, username: row.username }
-      createSession(reply, user.id)
+      createSession(request, reply, user.id)
       return { user }
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })

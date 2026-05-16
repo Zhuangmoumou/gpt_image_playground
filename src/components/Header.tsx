@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore } from '../store'
+import { initStore, useStore } from '../store'
 import { useVersionCheck } from '../hooks/useVersionCheck'
 import { useTooltip } from '../hooks/useTooltip'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
@@ -22,18 +22,34 @@ export default function Header() {
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const authUser = useStore((s) => s.authUser)
   const resetLocalAccountState = useStore((s) => s.resetLocalAccountState)
+  const showToast = useStore((s) => s.showToast)
   const { hasUpdate, latestRelease, dismiss } = useVersionCheck()
   const [showHelp, setShowHelp] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [isPwaInstalled, setIsPwaInstalled] = useState(isInstalledPwa)
+  const [syncing, setSyncing] = useState(false)
 
   const installTooltip = useTooltip()
+  const syncTooltip = useTooltip()
   const helpTooltip = useTooltip()
   const settingsTooltip = useTooltip()
 
   const handleLogout = async () => {
     await logout()
     await resetLocalAccountState()
+  }
+
+  const handleSync = async () => {
+    if (syncing) return
+    setSyncing(true)
+    try {
+      await initStore()
+      showToast('已同步后端数据', 'success')
+    } catch (err) {
+      showToast(`同步失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setSyncing(false)
+    }
   }
 
   useEffect(() => {
@@ -131,6 +147,41 @@ export default function Header() {
                 >
                   退出登录
                 </button>
+              </div>
+            )}
+            {authUser && (
+              <div
+                className="relative"
+                {...syncTooltip.handlers}
+              >
+                <button
+                  onClick={() => {
+                    dismissAllTooltips()
+                    void handleSync()
+                  }}
+                  disabled={syncing}
+                  className="p-2 rounded-lg hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-gray-900 transition-colors"
+                  aria-label="同步后端"
+                >
+                  <svg
+                    className={`w-5 h-5 text-gray-600 dark:text-gray-400 ${syncing ? 'animate-spin' : ''}`}
+                    style={syncing ? { animationDirection: 'reverse' } : undefined}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M21 12a9 9 0 0 0-15.3-6.4L3 8" />
+                    <path d="M3 3v5h5" />
+                    <path d="M3 12a9 9 0 0 0 15.3 6.4L21 16" />
+                    <path d="M16 16h5v5" />
+                  </svg>
+                </button>
+                <ViewportTooltip visible={syncTooltip.visible} className="whitespace-nowrap">
+                  {syncing ? '正在同步后端' : '同步后端'}
+                </ViewportTooltip>
               </div>
             )}
             {!isPwaInstalled && (

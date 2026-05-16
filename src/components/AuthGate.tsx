@@ -2,6 +2,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { getMe, getServerConfig, login, register } from '../lib/serverApi'
 import { initStore, useStore } from '../store'
 
+function getErrorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err)
+}
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const authUser = useStore((state) => state.authUser)
   const setAuthUser = useStore((state) => state.setAuthUser)
@@ -23,16 +27,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         setEnableRegistration(config.enableRegistration)
         if (me.user) {
           setAccountLoading(true)
-          useStore.setState({ authUser: me.user })
-          await initStore()
           setAuthUser(me.user)
-          setAccountLoading(false)
+          try {
+            await initStore()
+          } catch (err) {
+            if (!cancelled) useStore.getState().showToast(`加载账号数据失败：${getErrorMessage(err)}`, 'error')
+          } finally {
+            if (!cancelled) setAccountLoading(false)
+          }
         } else {
           setAuthUser(null)
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+        if (!cancelled) setError(getErrorMessage(err))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -56,7 +64,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       await initStore()
       setAuthUser(result.user)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(getErrorMessage(err))
     } finally {
       setAccountLoading(false)
       setSubmitting(false)

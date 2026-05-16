@@ -1,6 +1,7 @@
 import { memo, useEffect, useState, useRef } from 'react'
 import type { TaskRecord } from '../types'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
+import { getImageUrl } from '../lib/serverApi'
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
@@ -178,6 +179,9 @@ function TaskCard({
     }
   }, [task.outputImages])
 
+  const coverImageId = task.outputImages?.[0]
+  const coverSrc = thumbSrc || (task.status === 'done' && coverImageId ? getImageUrl(coverImageId) : '')
+
   const duration = (() => {
     let seconds: number
     if (task.status === 'running' || task.falRecoverable || task.customRecoverable) {
@@ -338,11 +342,11 @@ function TaskCard({
               </span>
             </div>
           )}
-          {task.status === 'done' && thumbSrc && (
+          {task.status === 'done' && coverSrc && (
             <>
               <img
-                src={thumbSrc}
-                data-image-id={task.outputImages[0]}
+                src={coverSrc}
+                data-image-id={coverImageId}
                 className="saveable-image w-full h-full object-cover"
                 loading="lazy"
                 alt=""
@@ -354,7 +358,7 @@ function TaskCard({
               )}
             </>
           )}
-          {task.status === 'done' && !thumbSrc && (
+          {task.status === 'done' && !coverSrc && (
             <svg
               className="w-8 h-8 text-gray-300"
               fill="none"

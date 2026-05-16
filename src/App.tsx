@@ -22,18 +22,15 @@ export default function App() {
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search)
+    if (!hasUrlSettingParams(searchParams)) return
+
     const nextSettings = buildSettingsFromUrlParams(useStore.getState().settings, searchParams)
-
     setSettings(nextSettings)
+    clearUrlSettingParams(searchParams)
 
-    if (hasUrlSettingParams(searchParams)) {
-      clearUrlSettingParams(searchParams)
-
-      const nextSearch = searchParams.toString()
-      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
-      window.history.replaceState(null, '', nextUrl)
-    }
-
+    const nextSearch = searchParams.toString()
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    window.history.replaceState(null, '', nextUrl)
   }, [setSettings])
 
   useEffect(() => {

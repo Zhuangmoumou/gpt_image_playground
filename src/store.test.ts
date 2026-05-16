@@ -3,6 +3,14 @@ import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
 import type { StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
+vi.mock('./lib/serverApi', async () => {
+  const actual = await vi.importActual<typeof import('./lib/serverApi')>('./lib/serverApi')
+  return {
+    ...actual,
+    saveUserSettings: vi.fn(async (settings, params) => ({ settings, params })),
+  }
+})
+
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
@@ -51,10 +59,27 @@ vi.mock('./lib/db', () => {
   }
 })
 import { clearImages, putImage } from './lib/db'
+import { saveUserSettings } from './lib/serverApi'
 import { editOutputs, getPersistedState, getTaskApiProfile, markInterruptedOpenAIRunningTasks, reuseConfig, submitTask, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+async function flushPromises() {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+}
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -207,6 +232,63 @@ describe('input persistence setting', () => {
 
     expect(persisted.prompt).toBe('')
     expect(persisted.inputImages).toEqual([])
+  })
+})
+
+describe('user settings server save queue', () => {
+  const mockedSaveUserSettings = vi.mocked(saveUserSettings)
+
+  beforeEach(async () => {
+    mockedSaveUserSettings.mockReset()
+    mockedSaveUserSettings.mockImplementation(async (settings, params) => ({ settings, params }))
+    useStore.setState({
+      authUser: { id: 'user-a', username: 'user-a' },
+      settings: normalizeSettings(DEFAULT_SETTINGS),
+      params: { ...DEFAULT_PARAMS },
+      showToast: vi.fn(),
+    })
+    await flushPromises()
+  })
+
+  it('saves settings changes for logged-in users', async () => {
+    useStore.getState().setSettings({ apiKey: 'server-key' })
+
+    await flushPromises()
+
+    expect(mockedSaveUserSettings).toHaveBeenCalledTimes(1)
+    expect(mockedSaveUserSettings).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'server-key' }), expect.any(Object))
+  })
+
+  it('serializes rapid changes and saves the latest snapshot', async () => {
+    const firstSave = createDeferred<Awaited<ReturnType<typeof saveUserSettings>>>()
+    mockedSaveUserSettings
+      .mockImplementationOnce(() => firstSave.promise)
+      .mockImplementation(async (settings, params) => ({ settings, params }))
+
+    useStore.getState().setSettings({ apiKey: 'first-key' })
+    useStore.getState().setSettings({ apiKey: 'latest-key' })
+    useStore.getState().setParams({ n: 2 })
+
+    expect(mockedSaveUserSettings).toHaveBeenCalledTimes(1)
+
+    firstSave.resolve({ settings: normalizeSettings(DEFAULT_SETTINGS), params: { ...DEFAULT_PARAMS } })
+    await flushPromises()
+
+    expect(mockedSaveUserSettings).toHaveBeenCalledTimes(2)
+    expect(mockedSaveUserSettings.mock.calls[1][0]).toMatchObject({ apiKey: 'latest-key' })
+    expect(mockedSaveUserSettings.mock.calls[1][1]).toMatchObject({ n: 2 })
+  })
+
+  it('shows an error toast when saving settings fails', async () => {
+    const showToast = vi.fn()
+    const error = Object.assign(new Error('Unauthorized'), { status: 401 })
+    mockedSaveUserSettings.mockRejectedValueOnce(error)
+    useStore.setState({ showToast })
+
+    useStore.getState().setSettings({ apiKey: 'unsaved-key' })
+    await flushPromises()
+
+    expect(showToast).toHaveBeenCalledWith('登录已失效，设置未保存', 'error')
   })
 })
 

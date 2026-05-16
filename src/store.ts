@@ -368,6 +368,51 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
   }
 }
 
+type UserSettingsSaveWaiter = {
+  resolve: () => void
+  reject: (err: unknown) => void
+}
+
+type UserSettingsSaveSnapshot = {
+  settings: AppSettings
+  params: TaskParams
+  waiters: UserSettingsSaveWaiter[]
+}
+
+let pendingUserSettingsSave: UserSettingsSaveSnapshot | null = null
+let activeUserSettingsSave: Promise<void> | null = null
+
+function getUserSettingsSaveErrorMessage(err: unknown) {
+  const status = err && typeof err === 'object' && 'status' in err ? (err as { status?: number }).status : undefined
+  if (status === 401 || status === 403) return '登录已失效，设置未保存'
+  const message = err instanceof Error ? err.message : String(err)
+  return `保存设置失败：${message}`
+}
+
+export function queueUserSettingsSave(settings: AppSettings, params: TaskParams) {
+  const promise = new Promise<void>((resolve, reject) => {
+    const waiters = pendingUserSettingsSave?.waiters ?? []
+    pendingUserSettingsSave = { settings, params, waiters: [...waiters, { resolve, reject }] }
+  })
+  if (!activeUserSettingsSave) activeUserSettingsSave = flushUserSettingsSave()
+  return promise
+}
+
+async function flushUserSettingsSave() {
+  while (pendingUserSettingsSave) {
+    const snapshot = pendingUserSettingsSave
+    pendingUserSettingsSave = null
+    try {
+      await saveUserSettings(snapshot.settings, snapshot.params)
+      snapshot.waiters.forEach((waiter) => waiter.resolve())
+    } catch (err) {
+      useStore.getState().showToast(getUserSettingsSaveErrorMessage(err), 'error')
+      snapshot.waiters.forEach((waiter) => waiter.reject(err))
+    }
+  }
+  activeUserSettingsSave = null
+}
+
 // ===== Store 类型 =====
 
 interface AppState {
@@ -526,7 +571,7 @@ export const useStore = create<AppState>()(
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
         applyGlassEffects(settings.enableGlassEffects)
         if (st.authUser) {
-          void saveUserSettings(settings, st.params)
+          void queueUserSettingsSave(settings, st.params).catch(() => {})
         }
         return {
           settings,
@@ -622,7 +667,7 @@ export const useStore = create<AppState>()(
       setParams: (p) => set((s) => {
         const params = { ...s.params, ...p }
         if (s.authUser) {
-          void saveUserSettings(s.settings, params)
+          void queueUserSettingsSave(s.settings, params).catch(() => {})
         }
         return { params }
       }),
@@ -1554,7 +1599,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
     setSettings({ ...DEFAULT_SETTINGS })
     setParams({ ...DEFAULT_PARAMS })
     if (useStore.getState().authUser) {
-      await saveUserSettings(normalizeSettings(DEFAULT_SETTINGS), { ...DEFAULT_PARAMS })
+      await queueUserSettingsSave(normalizeSettings(DEFAULT_SETTINGS), { ...DEFAULT_PARAMS })
     }
   }
 
@@ -1823,7 +1868,7 @@ export async function importData(file: File, options: ImportOptions = { importCo
       const merged = mergeImportedSettings(state.settings, data.settings)
       state.setSettings(merged)
       if (state.authUser) {
-        await saveUserSettings(normalizeSettings(merged), useStore.getState().params)
+        await queueUserSettingsSave(normalizeSettings(merged), useStore.getState().params)
       }
     }
 
