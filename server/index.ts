@@ -11,6 +11,7 @@ import { generateRoutes } from './routes/generate'
 import { imageRoutes } from './routes/images'
 import { settingsRoutes } from './routes/settings'
 import { taskRoutes } from './routes/tasks'
+import { agentRoutes } from './routes/agent'
 import { registerSecurityHooks } from './security'
 
 const app = Fastify({
@@ -63,6 +64,7 @@ await app.register(authRoutes)
 await app.register(imageRoutes)
 await app.register(settingsRoutes)
 await app.register(taskRoutes)
+await app.register(agentRoutes)
 await app.register(generateRoutes)
 
 const distDir = path.resolve(process.cwd(), 'dist')

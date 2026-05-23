@@ -47,6 +47,7 @@ export function migrate() {
       api_profile_id TEXT,
       api_profile_name TEXT,
       api_model TEXT,
+      api_mode TEXT,
       server_side_request INTEGER NOT NULL DEFAULT 0,
       fal_request_id TEXT,
       fal_endpoint TEXT,
@@ -58,6 +59,13 @@ export function migrate() {
       revised_prompt_by_image_json TEXT,
       raw_image_urls_json TEXT,
       raw_response_payload TEXT,
+      source_mode TEXT,
+      agent_conversation_id TEXT,
+      agent_round_id TEXT,
+      agent_message_id TEXT,
+      agent_tool_call_id TEXT,
+      agent_batch_call_id TEXT,
+      agent_tool_action TEXT,
       status TEXT NOT NULL,
       error TEXT,
       created_at INTEGER NOT NULL,
@@ -99,14 +107,28 @@ export function migrate() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS agent_state (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      conversations_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `)
 
   ensureColumn('tasks', 'api_profile_id', 'TEXT')
+  ensureColumn('tasks', 'api_mode', 'TEXT')
   ensureColumn('tasks', 'server_side_request', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('tasks', 'custom_task_id', 'TEXT')
   ensureColumn('tasks', 'custom_recoverable', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('tasks', 'raw_image_urls_json', 'TEXT')
   ensureColumn('tasks', 'raw_response_payload', 'TEXT')
+  ensureColumn('tasks', 'source_mode', 'TEXT')
+  ensureColumn('tasks', 'agent_conversation_id', 'TEXT')
+  ensureColumn('tasks', 'agent_round_id', 'TEXT')
+  ensureColumn('tasks', 'agent_message_id', 'TEXT')
+  ensureColumn('tasks', 'agent_tool_call_id', 'TEXT')
+  ensureColumn('tasks', 'agent_batch_call_id', 'TEXT')
+  ensureColumn('tasks', 'agent_tool_action', 'TEXT')
 }
 
 migrate()
@@ -136,6 +158,7 @@ export interface TaskRow {
   api_profile_id: string | null
   api_profile_name: string | null
   api_model: string | null
+  api_mode: string | null
   server_side_request: number
   fal_request_id: string | null
   fal_endpoint: string | null
@@ -147,6 +170,13 @@ export interface TaskRow {
   revised_prompt_by_image_json: string | null
   raw_image_urls_json: string | null
   raw_response_payload: string | null
+  source_mode: string | null
+  agent_conversation_id: string | null
+  agent_round_id: string | null
+  agent_message_id: string | null
+  agent_tool_call_id: string | null
+  agent_batch_call_id: string | null
+  agent_tool_action: string | null
   status: string
   error: string | null
   created_at: number
@@ -173,5 +203,11 @@ export interface UserSettingsRow {
   settings_json: string
   params_json: string
   created_at: number
+  updated_at: number
+}
+
+export interface AgentStateRow {
+  user_id: string
+  conversations_json: string
   updated_at: number
 }

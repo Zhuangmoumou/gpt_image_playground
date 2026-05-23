@@ -19,6 +19,7 @@ export function taskFromRow(row: TaskRow): TaskRecord {
     apiProvider: row.api_provider ?? undefined,
     apiProfileId: row.api_profile_id ?? undefined,
     apiProfileName: row.api_profile_name ?? undefined,
+    apiMode: row.api_mode === 'responses' ? 'responses' : row.api_mode === 'images' ? 'images' : undefined,
     apiModel: row.api_model ?? undefined,
     serverSideRequest: Boolean(row.server_side_request),
     falRequestId: row.fal_request_id ?? undefined,
@@ -35,12 +36,20 @@ export function taskFromRow(row: TaskRow): TaskRecord {
     maskTargetImageId: links.find((link) => link.role === 'mask-target')?.image_id ?? null,
     maskImageId: links.find((link) => link.role === 'mask')?.image_id ?? null,
     outputImages: links.filter((link) => link.role === 'output').map((link) => link.image_id),
+    streamPartialImageIds: links.filter((link) => link.role === 'stream-partial').map((link) => link.image_id),
     status: row.status === 'done' || row.status === 'error' ? row.status : 'running',
     error: row.error,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
     elapsed: row.elapsed_ms,
     isFavorite: Boolean(row.is_favorite),
+    sourceMode: row.source_mode === 'agent' ? 'agent' : row.source_mode === 'gallery' ? 'gallery' : undefined,
+    agentConversationId: row.agent_conversation_id ?? undefined,
+    agentRoundId: row.agent_round_id ?? undefined,
+    agentMessageId: row.agent_message_id ?? undefined,
+    agentToolCallId: row.agent_tool_call_id ?? undefined,
+    agentBatchCallId: row.agent_batch_call_id ?? undefined,
+    agentToolAction: row.agent_tool_action ?? undefined,
   }
 }
 
@@ -64,6 +73,7 @@ export function upsertTask(userId: string, task: TaskRecord) {
     api_profile_id: task.apiProfileId ?? null,
     api_profile_name: task.apiProfileName ?? null,
     api_model: task.apiModel ?? null,
+    api_mode: task.apiMode ?? null,
     server_side_request: task.serverSideRequest ? 1 : 0,
     fal_request_id: task.falRequestId ?? null,
     fal_endpoint: task.falEndpoint ?? null,
@@ -75,6 +85,13 @@ export function upsertTask(userId: string, task: TaskRecord) {
     revised_prompt_by_image_json: json(task.revisedPromptByImage),
     raw_image_urls_json: json(task.rawImageUrls),
     raw_response_payload: task.rawResponsePayload ?? null,
+    source_mode: task.sourceMode ?? null,
+    agent_conversation_id: task.agentConversationId ?? null,
+    agent_round_id: task.agentRoundId ?? null,
+    agent_message_id: task.agentMessageId ?? null,
+    agent_tool_call_id: task.agentToolCallId ?? null,
+    agent_batch_call_id: task.agentBatchCallId ?? null,
+    agent_tool_action: typeof task.agentToolAction === 'string' ? task.agentToolAction : null,
     status: task.status,
     error: task.error,
     created_at: task.createdAt,
@@ -86,16 +103,18 @@ export function upsertTask(userId: string, task: TaskRecord) {
 
   db.prepare(`
     INSERT INTO tasks (
-      id, user_id, prompt, params_json, api_provider, api_profile_id, api_profile_name, api_model,
+      id, user_id, prompt, params_json, api_provider, api_profile_id, api_profile_name, api_model, api_mode,
       server_side_request, fal_request_id, fal_endpoint, fal_recoverable, custom_task_id, custom_recoverable,
       actual_params_json, actual_params_by_image_json, revised_prompt_by_image_json,
-      raw_image_urls_json, raw_response_payload, status, error,
+      raw_image_urls_json, raw_response_payload, source_mode, agent_conversation_id, agent_round_id,
+      agent_message_id, agent_tool_call_id, agent_batch_call_id, agent_tool_action, status, error,
       created_at, finished_at, elapsed_ms, is_favorite, updated_at
     ) VALUES (
-      @id, @user_id, @prompt, @params_json, @api_provider, @api_profile_id, @api_profile_name, @api_model,
+      @id, @user_id, @prompt, @params_json, @api_provider, @api_profile_id, @api_profile_name, @api_model, @api_mode,
       @server_side_request, @fal_request_id, @fal_endpoint, @fal_recoverable, @custom_task_id, @custom_recoverable,
       @actual_params_json, @actual_params_by_image_json, @revised_prompt_by_image_json,
-      @raw_image_urls_json, @raw_response_payload, @status, @error,
+      @raw_image_urls_json, @raw_response_payload, @source_mode, @agent_conversation_id, @agent_round_id,
+      @agent_message_id, @agent_tool_call_id, @agent_batch_call_id, @agent_tool_action, @status, @error,
       @created_at, @finished_at, @elapsed_ms, @is_favorite, @updated_at
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -105,6 +124,7 @@ export function upsertTask(userId: string, task: TaskRecord) {
       api_profile_id = excluded.api_profile_id,
       api_profile_name = excluded.api_profile_name,
       api_model = excluded.api_model,
+      api_mode = excluded.api_mode,
       server_side_request = excluded.server_side_request,
       fal_request_id = excluded.fal_request_id,
       fal_endpoint = excluded.fal_endpoint,
@@ -116,6 +136,13 @@ export function upsertTask(userId: string, task: TaskRecord) {
       revised_prompt_by_image_json = excluded.revised_prompt_by_image_json,
       raw_image_urls_json = excluded.raw_image_urls_json,
       raw_response_payload = excluded.raw_response_payload,
+      source_mode = excluded.source_mode,
+      agent_conversation_id = excluded.agent_conversation_id,
+      agent_round_id = excluded.agent_round_id,
+      agent_message_id = excluded.agent_message_id,
+      agent_tool_call_id = excluded.agent_tool_call_id,
+      agent_batch_call_id = excluded.agent_batch_call_id,
+      agent_tool_action = excluded.agent_tool_action,
       status = excluded.status,
       error = excluded.error,
       finished_at = excluded.finished_at,
@@ -135,6 +162,7 @@ function replaceTaskLinks(task: TaskRecord) {
   if (task.maskTargetImageId) insert.run(task.id, task.maskTargetImageId, 'mask-target', 0)
   if (task.maskImageId) insert.run(task.id, task.maskImageId, 'mask', 0)
   task.outputImages.forEach((imageId, index) => insert.run(task.id, imageId, 'output', index))
+  task.streamPartialImageIds?.forEach((imageId, index) => insert.run(task.id, imageId, 'stream-partial', index))
 }
 
 export function listTasks(userId: string) {

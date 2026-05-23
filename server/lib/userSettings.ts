@@ -1,4 +1,4 @@
-import { DEFAULT_PARAMS } from '../../src/types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS, DEFAULT_STREAM_PARTIAL_IMAGES } from '../../src/types'
 import type { AppSettings, TaskParams } from '../../src/types'
 import { normalizeSettings } from '../../src/lib/apiProfiles'
 import { db, type UserSettingsRow } from '../db/client'
@@ -20,6 +20,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   alwaysShowRetryButton: false,
   enableGlassEffects: true,
   enterSubmit: false,
+  referenceImageEditAction: 'ask',
+  agentScrollToBottomAfterSubmit: true,
+  agentMaxToolRounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+  agentWebSearch: false,
+  copyImportUrlUseNewApiAddress: false,
+  copyImportUrlUseNewApiKey: true,
+  copyImportUrlUseNewApiModel: false,
   activeProfileId: 'default-openai',
   profiles: [{
     id: 'default-openai',
@@ -33,6 +40,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     codexCli: false,
     apiProxy: false,
     useServerSideRequests: true,
+    streamImages: true,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
   }],
 }
 

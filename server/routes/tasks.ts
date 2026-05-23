@@ -5,12 +5,13 @@ import { db } from '../db/client'
 import { getTaskForUser, listTasks, upsertTask } from '../lib/tasks'
 import { deleteUnreferencedImages, getImageForUser } from '../storage/images'
 
-function collectTaskImageIds(task: Pick<TaskRecord, 'inputImageIds' | 'maskImageId' | 'maskTargetImageId' | 'outputImages'>) {
+function collectTaskImageIds(task: Pick<TaskRecord, 'inputImageIds' | 'maskImageId' | 'maskTargetImageId' | 'outputImages' | 'streamPartialImageIds'>) {
   return [
     ...(task.inputImageIds ?? []),
     ...(task.maskTargetImageId ? [task.maskTargetImageId] : []),
     ...(task.maskImageId ? [task.maskImageId] : []),
     ...(task.outputImages ?? []),
+    ...(task.streamPartialImageIds ?? []),
   ]
 }
 
@@ -39,6 +40,9 @@ function assertTaskShape(task: TaskRecord) {
   if (task.maskImageId != null && !isSafeId(task.maskImageId)) throw new Error('无效的遮罩图片')
   if (!Array.isArray(task.outputImages) || task.outputImages.length > 32 || !task.outputImages.every(isSafeId)) {
     throw new Error('无效的输出图片列表')
+  }
+  if (task.streamPartialImageIds != null && (!Array.isArray(task.streamPartialImageIds) || task.streamPartialImageIds.length > 64 || !task.streamPartialImageIds.every(isSafeId))) {
+    throw new Error('无效的流式预览图片列表')
   }
 }
 

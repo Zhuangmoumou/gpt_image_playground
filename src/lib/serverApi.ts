@@ -1,4 +1,4 @@
-import type { AppSettings, TaskParams, TaskRecord } from '../types'
+import type { AgentConversation, AppSettings, TaskParams, TaskRecord } from '../types'
 
 export interface AuthUser {
   id: string
@@ -132,6 +132,17 @@ export function generateServerTask(taskId: string, settings: AppSettings) {
   return requestJson<{ task: TaskRecord }>('/api/generate', {
     method: 'POST',
     body: JSON.stringify({ taskId, settings }),
+  })
+}
+
+export function listServerAgentConversations() {
+  return requestJson<{ conversations: AgentConversation[] }>('/api/agent/conversations')
+}
+
+export function replaceServerAgentConversations(conversations: AgentConversation[]) {
+  return requestJson<{ conversations: AgentConversation[] }>('/api/agent/conversations', {
+    method: 'PUT',
+    body: JSON.stringify({ conversations }),
   })
 }
 
