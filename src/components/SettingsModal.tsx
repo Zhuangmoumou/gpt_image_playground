@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
+import { exportServerData, importServerData, saveServerSettings, syncLocalDataToServer } from '../lib/serverSync'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -25,6 +26,7 @@ import {
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type CustomProviderDefinition } from '../types'
+import { useAuth } from '../auth/AuthProvider'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
@@ -38,6 +40,7 @@ function newId(prefix: string) {
 }
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
+const SAVED_API_KEY_PLACEHOLDER = '__SERVER_SAVED_API_KEY__'
 const COPY_IMPORT_URL_OPTIONS_STORAGE_KEY = 'gpt-image-playground.copy-import-url-options'
 
 const DEFAULT_COPY_IMPORT_URL_OPTIONS = {
@@ -311,6 +314,7 @@ export default function SettingsModal() {
   const [clearConfig, setClearConfig] = useState(true)
   const [clearTasks, setClearTasks] = useState(true)
   const [isImportingData, setIsImportingData] = useState(false)
+  const [isSyncingData, setIsSyncingData] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
   const [dragOverProfileId, setDragOverProfileId] = useState<string | null>(null)
@@ -328,6 +332,7 @@ export default function SettingsModal() {
   const profileTouchDragRef = useRef<{ id: string, startX: number, startY: number, moved: boolean } | null>(null)
   const [copyImportUrlProfile, setCopyImportUrlProfile] = useState<ApiProfile | null>(null)
   const [copyImportUrlOptions, setCopyImportUrlOptions] = useState<CopyImportUrlOptions>(readCopyImportUrlOptions)
+  const { user, logout } = useAuth()
 
   const apiProxyConfig = readClientDevProxyConfig()
   const apiProxyAvailable = isApiProxyAvailable(apiProxyConfig)
@@ -509,6 +514,9 @@ export default function SettingsModal() {
     })
     setDraft(normalizedDraft)
     setSettings(normalizedDraft)
+    void saveServerSettings(normalizedDraft).catch((err) => {
+      showToast(`保存服务端设置失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    })
   }
 
   const updateCopyImportUrlOptions = (patch: Partial<CopyImportUrlOptions>) => {
@@ -650,18 +658,35 @@ export default function SettingsModal() {
 
   if (!showSettings) return null
 
+  const handleSyncServer = async () => {
+    setIsSyncingData(true)
+    try {
+      await syncLocalDataToServer()
+      const nextDraft = normalizeSettings(useStore.getState().settings)
+      setDraft(nextDraft)
+      setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
+      setShowProfileMenu(false)
+      showToast('已同步到服务端', 'success')
+    } catch (err) {
+      showToast(`同步失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setIsSyncingData(false)
+    }
+  }
+
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       setIsImportingData(true)
       try {
-        const imported = await importData(file, { importConfig, importTasks })
-        if (imported) {
-          const nextDraft = normalizeSettings(useStore.getState().settings)
-          setDraft(nextDraft)
-          setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
-          setShowProfileMenu(false)
-        }
+        await importServerData(file, { importConfig, importTasks })
+        const nextDraft = normalizeSettings(useStore.getState().settings)
+        setDraft(nextDraft)
+        setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
+        setShowProfileMenu(false)
+        showToast('服务端数据已导入', 'success')
+      } catch (err) {
+        showToast(`导入失败：${err instanceof Error ? err.message : String(err)}`, 'error')
       } finally {
         setIsImportingData(false)
       }
@@ -1131,6 +1156,41 @@ export default function SettingsModal() {
             <div className="flex-1 overflow-y-auto overscroll-contain custom-scrollbar p-5 sm:p-6">
             {activeTab === 'general' && (
               <div className="space-y-4">
+                <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-4 dark:border-blue-500/20 dark:bg-blue-500/10">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-bold text-gray-800 dark:text-gray-100">当前账号</div>
+                      <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {user?.username ?? '未知账号'} · {user?.role === 'admin' ? '管理员' : '普通用户'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void logout()}
+                      className="rounded-xl border border-red-200 bg-white/80 px-3 py-2 text-xs font-bold text-red-600 transition hover:bg-red-50 dark:border-red-500/20 dark:bg-white/[0.04] dark:text-red-300 dark:hover:bg-red-500/10"
+                    >
+                      退出登录
+                    </button>
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">开启毛玻璃效果</span>
+                    <button
+                      type="button"
+                      onClick={() => commitSettings({ ...draft, enableGlassEffect: !draft.enableGlassEffect })}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.enableGlassEffect ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={draft.enableGlassEffect}
+                      aria-label="开启毛玻璃效果"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.enableGlassEffect ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    开启后，顶部栏、弹窗和卡片会使用更明显的半透明模糊效果。
+                  </div>
+                </div>
                 <div className="hidden sm:block">
                   <div className="mb-1 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">任务提交方式</span>
@@ -1566,16 +1626,35 @@ export default function SettingsModal() {
                 </div>
               )}
 
+              <div className="block">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="block text-sm text-gray-600 dark:text-gray-300">服务端发出请求</span>
+                  <button
+                    type="button"
+                    onClick={() => commitSettings({ ...draft, serverRequestMode: !draft.serverRequestMode })}
+                    className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                    role="switch"
+                    aria-checked={draft.serverRequestMode}
+                    aria-label="服务端发出请求"
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.serverRequestMode ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                  </button>
+                </div>
+                <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                  开启后，浏览器只把任务提交到当前 VPS，由服务端代发第三方 API 请求，避免 API Key 出现在浏览器网络请求中。
+                </div>
+              </div>
+
               {/* 5. API Key */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API Key</span>
                 <div className="relative">
                   <input
-                    value={activeProfile.apiKey}
+                    value={activeProfile.apiKey === SAVED_API_KEY_PLACEHOLDER ? '' : activeProfile.apiKey}
                     onChange={(e) => updateActiveProfile({ apiKey: e.target.value })}
-                    onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value })}
+                    onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value || activeProfile.apiKey })}
                     type={showApiKey ? 'text' : 'password'}
-                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : 'sk-...'}
+                    placeholder={activeProfile.apiKey === SAVED_API_KEY_PLACEHOLDER ? '已保存，留空不修改' : activeProfile.provider === 'fal' ? 'FAL_KEY' : 'sk-...'}
                     className="w-full rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2.5 pr-10 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                   <button
@@ -1770,14 +1849,31 @@ export default function SettingsModal() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                   </svg>
                   <div className="text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
-                    所有的配置、任务记录和生成的图片均仅保存在您的浏览器本地（除非您使用的服务商存储了它们）。如果您需要清理浏览器站点数据、重置浏览器或使用其他设备，请先导出备份。
+所有配置、任务记录、图片和 Agent 对话均以当前账号的服务端数据为准。导入和导出会直接读写服务端数据；浏览器本地缓存只用于显示和兼容旧数据。
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4 dark:border-blue-500/20 dark:bg-blue-500/10 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">手动同步</h4>
+                      <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">将当前页面中的改动写入服务端，并重新拉取服务端快照。</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSyncServer}
+                      disabled={isSyncingData}
+                      className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSyncingData ? '同步中...' : '同步'}
+                    </button>
                   </div>
                 </div>
 
                 <div className="rounded-2xl border border-gray-100 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.02] space-y-4 shadow-sm">
                   <div className="flex items-center gap-2 mb-1">
                     <ExportIcon className="w-4 h-4 text-gray-700 dark:text-gray-300" />
-                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导出数据</h4>
+                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">从服务端导出数据</h4>
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <Checkbox
@@ -1792,18 +1888,25 @@ export default function SettingsModal() {
                     />
                   </div>
                   <button
-                    onClick={() => exportData({ exportConfig, exportTasks })}
+                    onClick={async () => {
+                      try {
+                        await exportServerData({ exportConfig, exportTasks })
+                        showToast('服务端数据已导出', 'success')
+                      } catch (err) {
+                        showToast(`导出失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+                      }
+                    }}
                     disabled={!exportConfig && !exportTasks}
                     className="w-full rounded-xl bg-gray-100/80 px-4 py-2.5 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 hover:text-gray-900 disabled:opacity-50 disabled:hover:bg-gray-100/80 disabled:hover:text-gray-700 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1] dark:hover:text-white dark:disabled:hover:bg-white/[0.06] dark:disabled:hover:text-gray-300 flex items-center justify-center gap-2"
                   >
-                    导出所选数据
+                    从服务端导出所选数据
                   </button>
                 </div>
 
                 <div className="rounded-2xl border border-gray-100 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.02] space-y-4 shadow-sm">
                   <div className="flex items-center gap-2 mb-1">
                     <ImportIcon className="w-4 h-4 text-gray-700 dark:text-gray-300" />
-                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导入数据</h4>
+                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">导入数据到服务端</h4>
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <Checkbox
@@ -1831,7 +1934,7 @@ export default function SettingsModal() {
                         导入中...
                       </>
                     ) : (
-                      '从 ZIP 导入所选数据'
+                      '从 ZIP 导入到服务端'
                     )}
                   </button>
                   <input

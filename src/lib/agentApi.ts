@@ -24,6 +24,45 @@ export interface AgentApiResult {
   rawResponsePayload?: string
 }
 
+function readCookie(name: string) {
+  const prefix = `${name}=`
+  return document.cookie
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix))
+    ?.slice(prefix.length)
+}
+
+function createServerRequestHeaders() {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const csrfToken = readCookie('gip_csrf')
+  if (csrfToken) headers['x-csrf-token'] = decodeURIComponent(csrfToken)
+  return headers
+}
+
+function createResponsesRequest(settings: AppSettings, profile: ApiProfile, body: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
+  if (settings.serverRequestMode) {
+    return fetch('/api/generation/responses', {
+      method: 'POST',
+      headers: createServerRequestHeaders(),
+      credentials: 'same-origin',
+      cache: 'no-store',
+      body: JSON.stringify({ body }),
+      signal,
+    })
+  }
+
+  const proxyConfig = readClientDevProxyConfig()
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  return fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    method: 'POST',
+    headers: createHeaders(profile),
+    cache: 'no-store',
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
 const AGENT_IMAGE_INSTRUCTIONS = [
   'You are an image-generation assistant in a multi-turn gallery app.',
   '',
@@ -635,13 +674,7 @@ export async function callAgentResponsesApi(opts: {
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: createHeaders(profile),
-      cache: 'no-store',
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const response = await createResponsesRequest(settings, profile, body, controller.signal)
 
     if (!response.ok) {
       throw new Error(await getApiErrorMessage(response))
@@ -674,8 +707,6 @@ export async function callAgentConversationTitleApi(opts: {
   signal?: AbortSignal
 }): Promise<string> {
   const { settings, profile, prompt, imageDataUrls, signal } = opts
-  const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
@@ -690,18 +721,12 @@ export async function callAgentConversationTitleApi(opts: {
       content.push({ type: 'input_image', image_url: dataUrl })
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: createHeaders(profile),
-      cache: 'no-store',
-      body: JSON.stringify({
-        model: profile.model || settings.model,
-        instructions: AGENT_TITLE_INSTRUCTIONS,
-        input: [{ role: 'user', content }],
-        max_output_tokens: 32,
-      }),
-      signal: controller.signal,
-    })
+    const response = await createResponsesRequest(settings, profile, {
+      model: profile.model || settings.model,
+      instructions: AGENT_TITLE_INSTRUCTIONS,
+      input: [{ role: 'user', content }],
+      max_output_tokens: 32,
+    }, controller.signal)
 
     if (!response.ok) {
       throw new Error(await getApiErrorMessage(response))
@@ -738,6 +763,7 @@ export interface BatchImageCallResult {
  * This mirrors the gallery mode's callResponsesImageApiSingle pattern.
  */
 export async function callBatchImageSingle(opts: {
+  settings: AppSettings
   profile: ApiProfile
   params: TaskParams
   batchItemId: string
@@ -749,7 +775,7 @@ export async function callBatchImageSingle(opts: {
   onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
 }): Promise<BatchImageCallResult> {
-  const { profile, params, batchItemId, prompt, referenceImageDataUrls, referenceIds, signal, onImageToolStarted, onPartialImage, onImageToolCompleted } = opts
+  const { settings, profile, params, batchItemId, prompt, referenceImageDataUrls, referenceIds, signal, onImageToolStarted, onPartialImage, onImageToolCompleted } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -807,13 +833,7 @@ export async function callBatchImageSingle(opts: {
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-      method: 'POST',
-      headers: createHeaders(profile),
-      cache: 'no-store',
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const response = await createResponsesRequest(settings, profile, body, controller.signal)
 
     if (!response.ok) {
       const errorMsg = await getApiErrorMessage(response)

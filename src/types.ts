@@ -95,6 +95,8 @@ export interface AppSettings {
   agentScrollToBottomAfterSubmit: boolean
   agentMaxToolRounds: number
   agentWebSearch: boolean
+  serverRequestMode: boolean
+  enableGlassEffect: boolean
   profiles: ApiProfile[]
   activeProfileId: string
 }

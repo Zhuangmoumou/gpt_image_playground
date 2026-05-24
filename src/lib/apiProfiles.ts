@@ -492,6 +492,8 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentScrollToBottomAfterSubmit: typeof record.agentScrollToBottomAfterSubmit === 'boolean' ? record.agentScrollToBottomAfterSubmit : true,
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
+    serverRequestMode: typeof record.serverRequestMode === 'boolean' ? record.serverRequestMode : true,
+    enableGlassEffect: typeof record.enableGlassEffect === 'boolean' ? record.enableGlassEffect : false,
     profiles,
     activeProfileId,
   }
@@ -778,4 +780,6 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   agentScrollToBottomAfterSubmit: true,
   agentMaxToolRounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
   agentWebSearch: false,
+  serverRequestMode: true,
+  enableGlassEffect: false,
 })

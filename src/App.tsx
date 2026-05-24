@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
+import { bootstrapServerData } from './lib/serverSync'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
@@ -21,6 +22,7 @@ import { useGlobalClickSuppression } from './lib/clickSuppression'
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
+  const enableGlassEffect = useStore((s) => s.settings.enableGlassEffect)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
@@ -38,7 +40,14 @@ export default function App() {
       window.history.replaceState(null, '', nextUrl)
     }
 
-    initStore()
+    void (async () => {
+      await initStore()
+      try {
+        await bootstrapServerData()
+      } catch (err) {
+        useStore.getState().showToast(err instanceof Error ? err.message : String(err), 'error')
+      }
+    })()
   }, [setSettings])
 
   useEffect(() => {
@@ -53,7 +62,7 @@ export default function App() {
   }, [])
 
   return (
-    <>
+    <div data-glass-effect={enableGlassEffect ? 'on' : 'off'}>
       <Header />
       {appMode === 'agent' ? (
         <AgentWorkspace />
@@ -74,6 +83,6 @@ export default function App() {
       <Toast />
       <MaskEditorModal />
       <ImageContextMenu />
-    </>
+    </div>
   )
 }

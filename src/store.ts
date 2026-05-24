@@ -3383,6 +3383,7 @@ async function executeAgentRound(
       const batchPromises = batchExecutionItems.map(async ({ item, batchToolCallId, references, referenceIds }) => {
 
         const batchResult = await callBatchImageSingle({
+          settings: requestSettings,
           profile: activeProfile,
           params,
           batchItemId: item.id,

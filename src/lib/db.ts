@@ -113,6 +113,10 @@ export function getStoredImageThumbnail(id: string): Promise<StoredImageThumbnai
   return dbTransaction(STORE_THUMBNAILS, 'readonly', (s) => s.get(id))
 }
 
+export function getAllImageThumbnails(): Promise<StoredImageThumbnail[]> {
+  return dbTransaction(STORE_THUMBNAILS, 'readonly', (s) => s.getAll())
+}
+
 export async function getStoredFreshImageThumbnail(id: string): Promise<StoredImageThumbnail | undefined> {
   const thumbnail = await getStoredImageThumbnail(id)
   return thumbnail?.thumbnailVersion === THUMBNAIL_VERSION ? thumbnail : undefined

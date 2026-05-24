@@ -162,6 +162,21 @@ input[type="number"] {
   display: none;
 }
 
+[data-glass-effect="on"] :where(header, [data-glass-panel]) {
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+}
+
+[data-glass-effect="on"] :where([class*="bg-white/95"], [class*="bg-white/90"], [class*="bg-white/80"]) {
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-glass-effect="on"] :where([class*="dark:bg-gray-900/95"], [class*="dark:bg-zinc-950/70"]) {
+    background-color: rgba(24, 24, 27, 0.68);
+  }
+}
+
 .markdown-renderer {
   color: inherit;
   line-height: inherit;
