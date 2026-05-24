@@ -1,8 +1,8 @@
 name: Trigger Vercel Deploy Hook
 
-于:
+on:
   push:
-    标签:
+    tags:
       - 'v*'
   workflow_dispatch:
 
