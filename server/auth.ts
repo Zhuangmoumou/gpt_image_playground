@@ -5,6 +5,7 @@ import { config } from './config'
 
 const SESSION_COOKIE = 'gip_session'
 const SESSION_MAX_AGE_MS = config.sessionMaxAgeDays * 24 * 60 * 60 * 1000
+const SESSION_RENEW_WINDOW_MS = Math.max(60 * 60 * 1000, Math.floor(SESSION_MAX_AGE_MS / 2))
 
 export interface AuthUser {
   id: string
@@ -126,7 +127,16 @@ function getSessionId(request: FastifyRequest) {
   return signed.valid ? signed.value : null
 }
 
-export function getCurrentUser(request: FastifyRequest): AuthUser | null {
+function touchSession(request: FastifyRequest, reply: FastifyReply | undefined, sessionId: string, now: number, expiresAt: number) {
+  db.prepare('UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?').run(now, expiresAt, sessionId)
+  if (!reply) return
+  reply.setCookie(SESSION_COOKIE, sessionId, {
+    ...sessionCookieOptions(request),
+    maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
+  })
+}
+
+export function getCurrentUser(request: FastifyRequest, reply?: FastifyReply): AuthUser | null {
   const sessionId = getSessionId(request)
   if (!sessionId) return null
 
@@ -144,12 +154,17 @@ export function getCurrentUser(request: FastifyRequest): AuthUser | null {
     return null
   }
 
-  db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?').run(now, sessionId)
+  const shouldRenew = row.expires_at - now <= SESSION_RENEW_WINDOW_MS
+  if (shouldRenew) {
+    touchSession(request, reply, sessionId, now, now + SESSION_MAX_AGE_MS)
+  } else {
+    db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?').run(now, sessionId)
+  }
   return { id: row.user_id, username: row.username }
 }
 
 export async function requireUser(request: FastifyRequest, reply: FastifyReply) {
-  const user = getCurrentUser(request)
+  const user = getCurrentUser(request, reply)
   if (!user) {
     reply.code(401).send({ error: '请先登录' })
     return null

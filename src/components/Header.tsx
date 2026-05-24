@@ -93,11 +93,12 @@ export default function Header() {
   const handleLogout = async () => {
     if (loggingOut) return
     setLoggingOut(true)
-    await resetLocalAccountState()
     try {
       await logout()
+      await resetLocalAccountState()
+      window.location.reload()
     } catch (err) {
-      showToast(`服务端会话清理失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+      showToast(`退出登录失败：${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setLoggingOut(false)
     }

@@ -620,8 +620,13 @@ export default function SettingsModal() {
   }
 
   const handleLogout = async () => {
-    await logout()
-    await resetLocalAccountState()
+    try {
+      await logout()
+      await resetLocalAccountState()
+      window.location.reload()
+    } catch (err) {
+      showToast(`退出登录失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
   }
 
   const commitTimeout = useCallback(() => {

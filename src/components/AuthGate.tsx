@@ -6,6 +6,12 @@ function getErrorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err)
 }
 
+function getErrorStatus(err: unknown) {
+  return typeof err === 'object' && err && 'status' in err && typeof (err as { status?: unknown }).status === 'number'
+    ? (err as { status: number }).status
+    : null
+}
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const authUser = useStore((state) => state.authUser)
   const setAuthUser = useStore((state) => state.setAuthUser)
@@ -14,17 +20,31 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [bootError, setBootError] = useState('')
   const [loading, setLoading] = useState(true)
   const [accountLoading, setAccountLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
 
-    Promise.all([getServerConfig(), getMe()])
-      .then(async ([config, me]) => {
+    setLoading(true)
+    setBootError('')
+
+    const loadConfig = getServerConfig()
+      .then((config) => {
         if (cancelled) return
         setEnableRegistration(config.enableRegistration)
+      })
+      .catch((err) => {
+        if (!cancelled) useStore.getState().showToast(`读取服务端配置失败：${getErrorMessage(err)}`, 'error')
+      })
+
+    void (async () => {
+      try {
+        const me = await getMe()
+        if (cancelled) return
         if (me.user) {
           setAccountLoading(true)
           setAuthUser(me.user)
@@ -35,24 +55,31 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           } finally {
             if (!cancelled) setAccountLoading(false)
           }
-        } else {
-          setAuthUser(null)
+          return
         }
-      })
-      .catch((err) => {
-        if (!cancelled) setError(getErrorMessage(err))
-      })
-      .finally(() => {
+        setAuthUser(null)
+      } catch (err) {
+        if (cancelled) return
+        const status = getErrorStatus(err)
+        if (status === 401 || status === 403) {
+          setAuthUser(null)
+        } else {
+          setBootError(getErrorMessage(err))
+          return
+        }
+      } finally {
+        await loadConfig
         if (!cancelled) setLoading(false)
-      })
+      }
+    })()
 
     return () => {
       cancelled = true
     }
-  }, [setAuthUser])
+  }, [retryKey, setAuthUser])
 
   useEffect(() => {
-    if (loading || accountLoading || authUser) return
+    if (loading || accountLoading || authUser || bootError) return
     let cancelled = false
 
     getServerConfig()
@@ -67,7 +94,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [accountLoading, authUser, loading])
+  }, [accountLoading, authUser, bootError, loading])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -94,6 +121,35 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (authUser) return <>{children}</>
+
+  if (bootError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-4 py-12 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950">
+        <div className="mx-auto flex min-h-[70vh] max-w-md items-center">
+          <div className="w-full rounded-3xl border border-white/70 bg-white/90 p-6 shadow-xl backdrop-blur glass-panel dark:border-white/[0.08] dark:bg-gray-900/90">
+            <div className="mb-6 text-center">
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">正在恢复登录状态</h1>
+              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                目前暂时无法确认你的会话状态，请重试连接服务端。
+              </p>
+            </div>
+
+            <div className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">
+              {bootError}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setRetryKey((value) => value + 1)}
+              className="w-full rounded-2xl bg-blue-600 px-4 py-3 font-semibold text-white transition hover:bg-blue-700"
+            >
+              重试连接
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-4 py-12 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950">

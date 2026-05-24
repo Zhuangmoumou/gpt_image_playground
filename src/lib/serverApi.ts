@@ -11,12 +11,20 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(url, {
-    ...init,
-    headers,
-    credentials: 'same-origin',
-    cache: 'no-store',
-  })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const error = new Error(`网络请求失败：${message}`) as Error & { networkError?: boolean }
+    error.networkError = true
+    throw error
+  }
 
   if (!response.ok) {
     let bodyText = ''

@@ -3,7 +3,7 @@ import { clearSession, createSession, createUser, findUserByUsername, getCurrent
 import { checkAuthRateLimit } from '../security'
 
 export async function authRoutes(app: FastifyInstance) {
-  app.get('/api/me', async (request) => ({ user: getCurrentUser(request) }))
+  app.get('/api/me', async (request, reply) => ({ user: getCurrentUser(request, reply) }))
 
   app.post('/api/auth/register', async (request, reply) => {
     if (!isRegistrationAllowed()) return reply.code(403).send({ error: '注册已关闭' })
