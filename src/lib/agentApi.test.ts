@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle } from './agentApi'
 
 function getAgentRequestPayload(init: RequestInit | undefined): Record<string, unknown> {
   const parsed = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> & { body?: Record<string, unknown> }
@@ -181,6 +181,37 @@ describe('callAgentResponsesApi', () => {
     expect(body.stream).toBeUndefined()
     expect(body.input[0].content[0].text).toContain('帮我生成一张橘猫头像，要赛博朋克风格')
     expect(title).toBe('生成猫咪头像')
+  })
+
+  it('does not send required tool_choice for batch image generation', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'image_generation_call',
+        id: 'ig_batch',
+        result: 'ZmluYWw=',
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+    })
+
+    await callBatchImageSingle({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      batchItemId: 'img_1',
+      prompt: 'prompt',
+      referenceImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = getAgentRequestPayload(init as RequestInit) as Record<string, any>
+    expect(body.tools).toHaveLength(1)
+    expect(body.tool_choice).toBeUndefined()
   })
 
   it('requests web search and applies citations', async () => {

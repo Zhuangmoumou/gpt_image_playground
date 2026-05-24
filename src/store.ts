@@ -3519,6 +3519,7 @@ async function executeAgentRound(
     const round = conversation.rounds.find((item) => item.id === roundId)
     const userMessage = round ? conversation.messages.find((message) => message.id === round.userMessageId) : null
     if (!round || !userMessage) return
+    const fallbackTaskPrompt = round.prompt || userMessage.content.trim()
     const maskDataUrl = round.maskImageId ? await ensureImageCached(round.maskImageId) : undefined
     if (round.maskImageId && !maskDataUrl) throw new Error('遮罩图片已不存在')
 
@@ -3553,7 +3554,7 @@ async function executeAgentRound(
 
     const ensureStreamingAgentTask = async (
       toolCallId: string,
-      taskPrompt = '',
+      taskPrompt = fallbackTaskPrompt,
       inputImageIds = round.inputImageIds ?? [],
       options: { createdAt?: number; agentBatchCallId?: string; maskTargetImageId?: string | null; maskImageId?: string | null } = {},
     ) => {
@@ -3612,7 +3613,7 @@ async function executeAgentRound(
         n: 1,
       }
       updateTaskInStore(taskId, {
-        prompt: image.revisedPrompt ?? latestTask?.prompt ?? '',
+        prompt: image.revisedPrompt ?? latestTask?.prompt ?? fallbackTaskPrompt,
         outputImages: [imgId],
         actualParams,
         actualParamsByImage: { [imgId]: actualParams },

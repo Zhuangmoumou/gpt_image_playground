@@ -335,6 +335,7 @@ describe('callImageApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
     expect(body.tools[0].partial_images).toBe(1)
+    expect(body.tool_choice).toBeUndefined()
     expect(partialImages).toEqual(['data:image/png;base64,cGFydGlhbA=='])
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],

@@ -731,7 +731,6 @@ export async function callAgentConversationTitleApi(opts: {
 // Batch image generation: execute a single image via Responses API
 // Uses the same pattern as gallery Responses API mode:
 //   - PROMPT_REWRITE_GUARD to prevent prompt modification
-//   - tool_choice: 'required' to force immediate generation
 //   - Reference images passed as input_image
 // ---------------------------------------------------------------------------
 
@@ -812,7 +811,6 @@ export async function callBatchImageSingle(opts: {
       model: profile.model,
       input,
       tools: [tool],
-      tool_choice: 'required',
     }
     if (profile.streamImages) {
       body.stream = true
