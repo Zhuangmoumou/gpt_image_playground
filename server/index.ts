@@ -11,8 +11,10 @@ import { registerSettingsRoutes } from './routes/settings.js'
 import { registerSyncRoutes } from './routes/sync.js'
 import { registerGenerationRoutes } from './routes/generation.js'
 import { formatRequest, logError, logInfo, logOk, logWarn } from './logger.js'
+import { migrateUserSettingsApiKeys } from './settings.js'
 
 runMigrations()
+migrateUserSettingsApiKeys()
 mkdirSync(config.storageDir, { recursive: true })
 
 const app = Fastify({ logger: false, bodyLimit: config.maxUploadMb * 1024 * 1024 })

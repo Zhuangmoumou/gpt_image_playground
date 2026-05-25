@@ -1645,6 +1645,26 @@ export default function SettingsModal() {
                 </div>
               </div>
 
+              <div className="block">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="block text-sm text-gray-600 dark:text-gray-300">抗中断后台生成</span>
+                  <button
+                    type="button"
+                    onClick={() => commitSettings({ ...draft, serverBackgroundMode: !draft.serverBackgroundMode })}
+                    disabled={!draft.serverRequestMode}
+                    className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode && draft.serverBackgroundMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${!draft.serverRequestMode ? 'cursor-not-allowed opacity-60' : ''}`}
+                    role="switch"
+                    aria-checked={draft.serverRequestMode && draft.serverBackgroundMode}
+                    aria-label="抗中断后台生成"
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.serverRequestMode && draft.serverBackgroundMode ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                  </button>
+                </div>
+                <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                  开启后，生成任务会提交给 VPS 后台执行，刷新页面后可继续查询结果。当前仅支持 OpenAI 兼容 Images / Responses；Agent 模式会在完成后一次性回填结果，不显示实时流式过程。
+                </div>
+              </div>
+
               {/* 5. API Key */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API Key</span>

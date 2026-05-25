@@ -37,9 +37,14 @@ loadEnvFile()
 
 const dataDir = resolve(process.cwd(), process.env.DATA_DIR || './data')
 const sessionSecret = process.env.APP_SECRET || process.env.SESSION_SECRET || ''
+const apiKeyEncryptionSecret = process.env.API_KEY_ENCRYPTION_SECRET || sessionSecret
 
 if (sessionSecret.length < 32) {
   throw new Error('APP_SECRET 或 SESSION_SECRET 至少需要 32 个字符')
+}
+
+if (apiKeyEncryptionSecret.length < 32) {
+  throw new Error('API_KEY_ENCRYPTION_SECRET 至少需要 32 个字符')
 }
 
 export const config = {
@@ -49,6 +54,7 @@ export const config = {
   databasePath: resolve(process.cwd(), process.env.DATABASE_PATH || process.env.DB_PATH || `${dataDir}/app.sqlite3`),
   storageDir: resolve(process.cwd(), process.env.STORAGE_DIR || process.env.IMAGES_DIR || `${dataDir}/storage`),
   sessionSecret,
+  apiKeyEncryptionSecret,
   allowRegistration: readBoolean('ALLOW_REGISTRATION', readBoolean('ENABLE_REGISTRATION', true)),
   sessionTtlDays: readNumber('SESSION_TTL_DAYS', readNumber('SESSION_MAX_AGE_DAYS', 7)),
   maxUploadMb: readNumber('MAX_UPLOAD_MB', 100),

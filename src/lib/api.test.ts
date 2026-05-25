@@ -3,6 +3,8 @@ import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
 
+const DIRECT_SETTINGS = { ...DEFAULT_SETTINGS, serverRequestMode: false }
+
 describe('callImageApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -24,7 +26,7 @@ describe('callImageApi', () => {
       }))
 
       await callImageApi({
-        settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses', codexCli },
+        settings: { ...DIRECT_SETTINGS, apiKey: 'test-key', apiMode: 'responses', codexCli },
         prompt: 'prompt',
         params: { ...DEFAULT_PARAMS },
         inputImageDataUrls: [],
@@ -51,7 +53,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: { ...DIRECT_SETTINGS, apiKey: 'test-key', codexCli: true },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -82,7 +84,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: true },
+      settings: { ...DIRECT_SETTINGS, apiKey: 'test-key', codexCli: true },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -116,7 +118,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         streamImages: true,
         streamPartialImages: 3,
@@ -169,7 +171,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         streamImages: true,
         profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
@@ -210,7 +212,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         streamImages: true,
         profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
@@ -259,7 +261,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         streamImages: true,
         streamPartialImages: 1,
@@ -312,7 +314,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         apiMode: 'responses',
         streamImages: true,
@@ -357,7 +359,7 @@ describe('callImageApi', () => {
     }))
 
     const result = await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      settings: { ...DIRECT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -386,7 +388,7 @@ describe('callImageApi', () => {
 
     const result = await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         apiMode: 'responses',
         streamImages: true,
@@ -420,7 +422,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
@@ -448,7 +450,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         apiProxy: false,
         baseUrl: 'http://api.example.com/v1',
@@ -473,7 +475,7 @@ describe('callImageApi', () => {
     }))
 
     await callImageApi({
-      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      settings: { ...DIRECT_SETTINGS, apiKey: 'test-key' },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
@@ -497,7 +499,7 @@ describe('callImageApi', () => {
 
     await callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: 'http://api.example.com/v1',
@@ -536,7 +538,7 @@ describe('callImageApi', () => {
 
     const promise = callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         baseUrl: 'https://api.example.com/v1',
         customProviders: [{
           id: 'custom-async',
@@ -617,7 +619,7 @@ describe('callImageApi', () => {
 
     const promise = callImageApi({
       settings: {
-        ...DEFAULT_SETTINGS,
+        ...DIRECT_SETTINGS,
         baseUrl: 'https://api.example.com/v1',
         customProviders: [{
           id: 'custom-async',

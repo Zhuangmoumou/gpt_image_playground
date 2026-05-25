@@ -3,6 +3,7 @@ export interface ServerApiOptions extends RequestInit {
 }
 
 function readCookie(name: string) {
+  if (typeof document === 'undefined') return undefined
   const prefix = `${name}=`
   return document.cookie
     .split(';')

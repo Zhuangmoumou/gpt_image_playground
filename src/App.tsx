@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
@@ -23,10 +23,14 @@ export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
   const enableGlassEffect = useStore((s) => s.settings.enableGlassEffect)
+  const initializedRef = useRef(false)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
   useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     const searchParams = new URLSearchParams(window.location.search)
     const nextSettings = buildSettingsFromUrlParams(useStore.getState().settings, searchParams)
 

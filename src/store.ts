@@ -41,7 +41,8 @@ import {
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
+import { getGenerationJob, submitGenerationJob, type AgentGenerationJobResult, type ImageGenerationJobResult } from './lib/serverGenerationJobs'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, createAgentResponsesBody, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
@@ -71,6 +72,7 @@ const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const serverJobPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
 let agentConversationPersistenceReady = false
 let agentConversationMigrationPending = false
@@ -387,7 +389,9 @@ function normalizeAgentRound(value: unknown, fallbackIndex: number): AgentRound 
   if (typeof round.id !== 'string' || !round.id) return null
   if (typeof round.userMessageId !== 'string' || !round.userMessageId) return null
 
-  const status = round.status === 'running'
+  const status = round.status === 'running' && typeof round.serverJobId === 'string'
+    ? 'running'
+    : round.status === 'running'
     ? 'error'
     : round.status === 'error' || round.status === 'done'
     ? round.status
@@ -406,6 +410,13 @@ function normalizeAgentRound(value: unknown, fallbackIndex: number): AgentRound 
     outputTaskIds: normalizeStringArray(round.outputTaskIds),
     ...(typeof round.responseId === 'string' ? { responseId: round.responseId } : {}),
     ...(Array.isArray(round.responseOutput) ? { responseOutput: round.responseOutput } : {}),
+    ...(typeof round.serverJobId === 'string' ? { serverJobId: round.serverJobId } : {}),
+    ...(typeof round.apiProvider === 'string' ? { apiProvider: round.apiProvider } : {}),
+    ...(typeof round.apiProfileId === 'string' ? { apiProfileId: round.apiProfileId } : {}),
+    ...(typeof round.apiProfileName === 'string' ? { apiProfileName: round.apiProfileName } : {}),
+    ...(round.apiMode === 'images' || round.apiMode === 'responses' ? { apiMode: round.apiMode } : {}),
+    ...(typeof round.apiModel === 'string' ? { apiModel: round.apiModel } : {}),
+    ...(round.params ? { params: { ...DEFAULT_PARAMS, ...round.params } } : {}),
     status,
     error: status === 'error'
       ? typeof round.error === 'string' ? round.error : '上次请求已中断'
@@ -1943,6 +1954,21 @@ export async function initStore() {
     ) {
       scheduleCustomRecovery(task.id, 0)
     }
+    if (task.serverJobId && task.status === 'running') {
+      scheduleServerImageJobPolling(task.id, task.serverJobId, 0)
+    }
+  }
+
+  for (const conversation of useStore.getState().agentConversations) {
+    for (const round of conversation.rounds) {
+      if (!round.serverJobId || round.status !== 'running') continue
+      const profile = round.apiProfileId
+        ? normalizeSettings(useStore.getState().settings).profiles.find((item) => item.id === round.apiProfileId)
+        : getActiveApiProfile(useStore.getState().settings)
+      if (!profile) continue
+      const assistantMessageId = round.assistantMessageId ?? conversation.messages.find((message) => message.roundId === round.id && message.role === 'assistant')?.id ?? genId()
+      scheduleServerAgentJobPolling(conversation.id, round.id, round.serverJobId, round.params ?? DEFAULT_PARAMS, profile, round.createdAt, assistantMessageId, 0)
+    }
   }
 
   // 收集所有任务引用的图片 id
@@ -3159,6 +3185,163 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile)
 }
 
+function canUseServerBackgroundAgent(settings: AppSettings, profile: ApiProfile) {
+  return Boolean(settings.serverRequestMode && settings.serverBackgroundMode && profile.provider === 'openai' && profile.apiMode === 'responses')
+}
+
+async function completeServerAgentJob(conversationId: string, roundId: string, jobId: string, result: AgentGenerationJobResult, params: TaskParams, activeProfile: ApiProfile, startedAt: number, assistantMessageId: string) {
+  const latestConversation = useStore.getState().agentConversations.find((conversation) => conversation.id === conversationId)
+  const latestRound = latestConversation?.rounds.find((round) => round.id === roundId)
+  if (!latestConversation || !latestRound || latestRound.status !== 'running' || latestRound.serverJobId !== jobId) return
+
+  const taskIds: string[] = []
+  for (const image of result.images) {
+    const imgId = await storeImage(image.dataUrl, 'generated')
+    cacheImage(imgId, image.dataUrl)
+    const actualParams: Partial<TaskParams> = {
+      ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
+      n: 1,
+    }
+    const task: TaskRecord = {
+      id: genId(),
+      prompt: image.revisedPrompt ?? latestRound.prompt,
+      params,
+      apiProvider: activeProfile.provider,
+      apiProfileId: activeProfile.id,
+      apiProfileName: activeProfile.name,
+      apiMode: activeProfile.apiMode,
+      apiModel: activeProfile.model,
+      inputImageIds: latestRound.inputImageIds,
+      maskTargetImageId: latestRound.maskTargetImageId ?? null,
+      maskImageId: latestRound.maskImageId ?? null,
+      outputImages: [imgId],
+      actualParams,
+      actualParamsByImage: { [imgId]: actualParams },
+      revisedPromptByImage: image.revisedPrompt ? { [imgId]: image.revisedPrompt } : undefined,
+      rawResponsePayload: result.rawResponsePayload,
+      status: 'done',
+      error: null,
+      createdAt: startedAt,
+      finishedAt: Date.now(),
+      elapsed: Date.now() - startedAt,
+      sourceMode: 'agent',
+      agentConversationId: conversationId,
+      agentRoundId: roundId,
+      agentMessageId: assistantMessageId,
+      agentToolCallId: image.toolCallId,
+      agentToolAction: image.action,
+    }
+    useStore.getState().setTasks([task, ...useStore.getState().tasks])
+    await putTask(task)
+    taskIds.push(task.id)
+  }
+
+  const finalContent = result.text.trim() || (taskIds.length > 0 ? '图像已生成。' : '')
+  const assistantMessage: AgentMessage = {
+    id: assistantMessageId,
+    role: 'assistant',
+    content: finalContent,
+    roundId,
+    outputTaskIds: taskIds,
+    createdAt: Date.now(),
+  }
+
+  updateAgentConversation(conversationId, (current) => ({
+    ...current,
+    updatedAt: Date.now(),
+    rounds: current.rounds.map((round) => round.id === roundId
+      ? {
+          ...round,
+          assistantMessageId,
+          outputTaskIds: taskIds,
+          responseId: result.responseId,
+          responseOutput: result.outputItems ?? [],
+          serverJobId: undefined,
+          status: 'done',
+          error: null,
+          finishedAt: Date.now(),
+        }
+      : round,
+    ),
+    messages: current.messages.some((message) => message.id === assistantMessageId)
+      ? current.messages.map((message) => message.id === assistantMessageId ? assistantMessage : message)
+      : [...current.messages, assistantMessage],
+  }))
+  useStore.getState().showToast(taskIds.length > 0 ? 'Agent 已生成图片' : 'Agent 已回复', 'success')
+}
+
+function scheduleServerAgentJobPolling(conversationId: string, roundId: string, jobId: string, params: TaskParams, activeProfile: ApiProfile, startedAt: number, assistantMessageId: string, delayMs = 1500) {
+  const key = `agent:${jobId}`
+  if (serverJobPollTimers.has(key)) return
+  const timer = setTimeout(async () => {
+    serverJobPollTimers.delete(key)
+    const conversation = useStore.getState().agentConversations.find((item) => item.id === conversationId)
+    const round = conversation?.rounds.find((item) => item.id === roundId)
+    if (!round || round.status !== 'running' || round.serverJobId !== jobId) return
+    try {
+      const job = await getGenerationJob<AgentGenerationJobResult>(jobId)
+      if (job.status === 'queued' || job.status === 'running') {
+        scheduleServerAgentJobPolling(conversationId, roundId, jobId, params, activeProfile, startedAt, assistantMessageId, 2000)
+        return
+      }
+      if (job.status === 'done' && job.result) {
+        await completeServerAgentJob(conversationId, roundId, jobId, job.result, params, activeProfile, startedAt, assistantMessageId)
+        return
+      }
+      const message = job.error || '服务端后台 Agent 请求失败'
+      updateAgentConversation(conversationId, (current) => ({
+        ...current,
+        updatedAt: Date.now(),
+        rounds: current.rounds.map((item) => item.id === roundId
+          ? { ...item, serverJobId: undefined, status: 'error', error: message, finishedAt: Date.now() }
+          : item,
+        ),
+        messages: current.messages.some((item) => item.id === assistantMessageId)
+          ? current.messages.map((item) => item.id === assistantMessageId ? { ...item, content: `请求失败：${message}` } : item)
+          : [...current.messages, { id: assistantMessageId, role: 'assistant', content: `请求失败：${message}`, roundId, createdAt: Date.now() }],
+      }))
+    } catch {
+      scheduleServerAgentJobPolling(conversationId, roundId, jobId, params, activeProfile, startedAt, assistantMessageId, 3000)
+    }
+  }, delayMs)
+  serverJobPollTimers.set(key, timer)
+}
+
+async function startServerAgentJob(conversationId: string, roundId: string, params: TaskParams, requestSettings: AppSettings, activeProfile: ApiProfile, apiInput: unknown, maskDataUrl: string | undefined, assistantMessageId: string, startedAt: number) {
+  const body = createAgentResponsesBody({
+    settings: requestSettings,
+    profile: activeProfile,
+    params,
+    input: apiInput,
+    maskDataUrl,
+    stream: false,
+    includeAppFunctionTools: false,
+  })
+  const response = await submitGenerationJob('responses', { body }, { conversationId, roundId })
+  updateAgentConversation(conversationId, (current) => ({
+    ...current,
+    updatedAt: Date.now(),
+    rounds: current.rounds.map((round) => round.id === roundId
+      ? {
+          ...round,
+          assistantMessageId,
+          serverJobId: response.jobId,
+          apiProvider: activeProfile.provider,
+          apiProfileId: activeProfile.id,
+          apiProfileName: activeProfile.name,
+          apiMode: activeProfile.apiMode,
+          apiModel: activeProfile.model,
+          params,
+        }
+      : round,
+    ),
+    messages: current.messages.some((message) => message.id === assistantMessageId)
+      ? current.messages.map((message) => message.id === assistantMessageId ? { ...message, content: '已提交到服务端后台生成，完成后会自动回填。' } : message)
+      : [...current.messages, { id: assistantMessageId, role: 'assistant', content: '已提交到服务端后台生成，完成后会自动回填。', roundId, createdAt: Date.now() }],
+  }))
+  scheduleServerAgentJobPolling(conversationId, roundId, response.jobId, params, activeProfile, startedAt, assistantMessageId, 500)
+}
+
 async function executeAgentRound(
   conversationId: string,
   roundId: string,
@@ -3186,6 +3369,10 @@ async function executeAgentRound(
       ? conversation.messages.find((message) => message.id === round.assistantMessageId) ?? null
       : conversation.messages.find((message) => message.roundId === roundId && message.role === 'assistant') ?? null
     const assistantMessageId = existingAssistantMessage?.id ?? genId()
+    if (canUseServerBackgroundAgent(requestSettings, activeProfile)) {
+      await startServerAgentJob(conversationId, roundId, params, requestSettings, activeProfile, apiInput, maskDataUrl, assistantMessageId, startedAt)
+      return
+    }
     const shouldStreamAssistantMessage = activeProfile.streamImages === true
     const streamingTaskIds: string[] = []
     const taskIdByToolCallId = new Map<string, string>()
@@ -3773,6 +3960,99 @@ async function executeAgentRound(
   }
 }
 
+function clearServerJobPollTimer(key: string) {
+  const timer = serverJobPollTimers.get(key)
+  if (timer) clearTimeout(timer)
+  serverJobPollTimers.delete(key)
+}
+
+function canUseServerBackgroundImages(settings: AppSettings, profile: ApiProfile) {
+  return Boolean(settings.serverRequestMode && settings.serverBackgroundMode && profile.provider !== 'fal' && profile.apiMode === 'images')
+}
+
+async function completeServerImageJob(taskId: string, result: ImageGenerationJobResult) {
+  const latest = useStore.getState().tasks.find((task) => task.id === taskId)
+  if (!latest || latest.status !== 'running') return
+
+  const outputIds: string[] = []
+  for (const dataUrl of result.images) {
+    const imgId = await storeImage(dataUrl, 'generated')
+    cacheImage(imgId, dataUrl)
+    outputIds.push(imgId)
+  }
+
+  const actualParams = { ...result.actualParams, n: outputIds.length }
+  const actualParamsByImage = mapActualParamsByImage(outputIds, result.actualParamsList)
+  const revisedPromptByImage = result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
+    const imgId = outputIds[index]
+    if (imgId && revisedPrompt?.trim()) acc[imgId] = revisedPrompt
+    return acc
+  }, {})
+  const partialImageIdsToClean = latest.streamPartialImageIds || []
+  clearOpenAIWatchdogTimer(taskId)
+  useStore.getState().setTaskStreamPreview(taskId)
+  updateTaskInStore(taskId, {
+    outputImages: outputIds,
+    streamPartialImageIds: undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
+    actualParams,
+    actualParamsByImage,
+    revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+    status: 'done',
+    error: null,
+    finishedAt: Date.now(),
+    elapsed: Date.now() - latest.createdAt,
+    serverJobId: undefined,
+    falRecoverable: false,
+    customRecoverable: false,
+  })
+  void deleteUnreferencedImageIds(partialImageIdsToClean)
+  useStore.getState().showToast(`生成完成，共 ${outputIds.length} 张图片`, 'success')
+}
+
+function scheduleServerImageJobPolling(taskId: string, jobId: string, delayMs = 1500) {
+  const key = `image:${jobId}`
+  if (serverJobPollTimers.has(key)) return
+  const timer = setTimeout(async () => {
+    serverJobPollTimers.delete(key)
+    const latest = useStore.getState().tasks.find((task) => task.id === taskId)
+    if (!latest || latest.status !== 'running' || latest.serverJobId !== jobId) return
+    try {
+      const job = await getGenerationJob<ImageGenerationJobResult>(jobId)
+      if (job.status === 'queued' || job.status === 'running') {
+        scheduleServerImageJobPolling(taskId, jobId, 2000)
+        return
+      }
+      if (job.status === 'done' && job.result) {
+        await completeServerImageJob(taskId, job.result)
+        return
+      }
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: job.error || '服务端后台生成失败',
+        serverJobId: undefined,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - latest.createdAt,
+      })
+    } catch (err) {
+      scheduleServerImageJobPolling(taskId, jobId, 3000)
+    }
+  }, delayMs)
+  serverJobPollTimers.set(key, timer)
+}
+
+async function startServerImageJob(taskId: string, requestSettings: AppSettings, task: TaskRecord, inputDataUrls: string[], maskDataUrl?: string) {
+  const response = await submitGenerationJob('images', {
+    settings: requestSettings,
+    prompt: replaceImageMentionsForApi(task.prompt, inputDataUrls.length),
+    params: task.params,
+    inputImageDataUrls: inputDataUrls,
+    maskDataUrl,
+  }, { taskId })
+  updateTaskInStore(taskId, { serverJobId: response.jobId })
+  scheduleServerImageJobPolling(taskId, response.jobId, 500)
+}
+
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -3815,6 +4095,12 @@ async function executeTask(taskId: string) {
     if (task.maskImageId) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
+    }
+
+    if (canUseServerBackgroundImages(requestSettings, activeProfile)) {
+      clearOpenAIWatchdogTimer(taskId)
+      await startServerImageJob(taskId, requestSettings, task, inputDataUrls, maskDataUrl)
+      return
     }
 
     const result = await callImageApi({
@@ -3988,8 +4274,9 @@ async function executeTask(taskId: string) {
 
 export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   const { tasks, setTasks } = useStore.getState()
+  const updatedAt = patch.updatedAt ?? Date.now()
   const updated = tasks.map((t) =>
-    t.id === taskId ? { ...t, ...patch } : t,
+    t.id === taskId ? { ...t, ...patch, updatedAt } : t,
   )
   setTasks(updated)
   maybeOpenSupportPrompt(tasks, updated, taskId)

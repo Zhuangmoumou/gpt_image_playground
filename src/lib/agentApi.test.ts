@@ -3,6 +3,8 @@ import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
 import { callAgentConversationTitleApi, callAgentResponsesApi } from './agentApi'
 
+const DIRECT_SETTINGS = { ...DEFAULT_SETTINGS, serverRequestMode: false }
+
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -32,7 +34,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     const result = await callAgentResponsesApi({
-      settings: DEFAULT_SETTINGS,
+      settings: DIRECT_SETTINGS,
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
@@ -67,7 +69,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     await callAgentResponsesApi({
-      settings: DEFAULT_SETTINGS,
+      settings: DIRECT_SETTINGS,
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'edit' }] }],
@@ -96,7 +98,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     const result = await callAgentResponsesApi({
-      settings: DEFAULT_SETTINGS,
+      settings: DIRECT_SETTINGS,
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
@@ -133,7 +135,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     await expect(callAgentResponsesApi({
-      settings: DEFAULT_SETTINGS,
+      settings: DIRECT_SETTINGS,
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
@@ -164,7 +166,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     const title = await callAgentConversationTitleApi({
-      settings: DEFAULT_SETTINGS,
+      settings: DIRECT_SETTINGS,
       profile,
       prompt: '帮我生成一张橘猫头像，要赛博朋克风格',
     })
@@ -213,7 +215,7 @@ describe('callAgentResponsesApi', () => {
     })
 
     const result = await callAgentResponsesApi({
-      settings: { ...DEFAULT_SETTINGS, agentWebSearch: true },
+      settings: { ...DIRECT_SETTINGS, agentWebSearch: true },
       profile,
       params: DEFAULT_PARAMS,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],

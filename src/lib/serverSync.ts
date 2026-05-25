@@ -12,9 +12,26 @@ import {
 } from './db'
 import { serverApi } from './serverApi'
 
+const LOCAL_SETTINGS_UPDATED_AT_KEY = 'gpt-image-playground.settings-updated-at'
+
+interface ServerManifestItem {
+  id: string
+  updatedAt: number
+}
+
+interface ServerManifest {
+  settings: { revision: number; updatedAt: number } | null
+  tasks: ServerManifestItem[]
+  images: ServerManifestItem[]
+  thumbnails: ServerManifestItem[]
+  agentConversations: ServerManifestItem[]
+  serverTime: number
+}
+
 interface ServerSnapshot {
   settings: AppSettings | null
   settingsRevision: number
+  settingsUpdatedAt?: number
   tasks: TaskRecord[]
   images: StoredImage[]
   thumbnails: StoredImageThumbnail[]
@@ -23,11 +40,23 @@ interface ServerSnapshot {
 }
 
 interface SyncPayload {
+  settings?: AppSettings
+  settingsUpdatedAt?: number
+  tasks?: TaskRecord[]
+  images?: StoredImage[]
+  thumbnails?: StoredImageThumbnail[]
+  agentConversations?: AgentConversation[]
+}
+
+interface LocalSyncState {
   settings: AppSettings
+  settingsUpdatedAt: number
   tasks: TaskRecord[]
-  images: StoredImage[]
-  thumbnails: StoredImageThumbnail[]
   agentConversations: AgentConversation[]
+  taskUpdatedAt: Map<string, number>
+  conversationUpdatedAt: Map<string, number>
+  imageIds: Set<string>
+  thumbnailIds: Set<string>
 }
 
 function snapshotHasData(snapshot: ServerSnapshot) {
@@ -38,6 +67,42 @@ function snapshotHasData(snapshot: ServerSnapshot) {
     snapshot.thumbnails.length ||
     snapshot.agentConversations.length,
   )
+}
+
+function readLocalSettingsUpdatedAt() {
+  if (typeof window === 'undefined') return 0
+  const value = Number(window.localStorage.getItem(LOCAL_SETTINGS_UPDATED_AT_KEY) || 0)
+  return Number.isFinite(value) ? value : 0
+}
+
+function writeLocalSettingsUpdatedAt(updatedAt: number) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(LOCAL_SETTINGS_UPDATED_AT_KEY, String(updatedAt))
+}
+
+function hasMeaningfulSettings(settings: AppSettings) {
+  return Boolean(
+    settings.apiKey.trim() ||
+    settings.customProviders.length ||
+    settings.profiles.some((profile) => profile.apiKey.trim() || profile.baseUrl !== DEFAULT_SETTINGS.baseUrl || profile.model !== DEFAULT_SETTINGS.model),
+  )
+}
+
+function ensureLocalSettingsUpdatedAt(settings: AppSettings) {
+  const saved = readLocalSettingsUpdatedAt()
+  if (saved > 0) return saved
+  if (!hasMeaningfulSettings(settings)) return 0
+  const updatedAt = Date.now()
+  writeLocalSettingsUpdatedAt(updatedAt)
+  return updatedAt
+}
+
+function getTaskUpdatedAt(task: TaskRecord) {
+  return task.updatedAt ?? task.finishedAt ?? task.createdAt
+}
+
+function getManifestMap(items: ServerManifestItem[]) {
+  return new Map(items.map((item) => [item.id, item.updatedAt] as const))
 }
 
 function dataUrlToBytes(dataUrl: string): { ext: string; bytes: Uint8Array } {
@@ -84,7 +149,7 @@ function collectReferencedImageIds(tasks: TaskRecord[], agentConversations: Agen
       if (round.maskTargetImageId) ids.add(round.maskTargetImageId)
     }
   }
-  return [...ids]
+  return ids
 }
 
 function mergeAgentConversationsForSync(current: AgentConversation[], stored: AgentConversation[]) {
@@ -97,78 +162,230 @@ function mergeAgentConversationsForSync(current: AgentConversation[], stored: Ag
   return [...byId.values()]
 }
 
-async function createLocalPayload(): Promise<SyncPayload> {
+async function collectLocalSyncState(): Promise<LocalSyncState> {
   const state = useStore.getState()
-  const tasks = state.tasks
+  const tasks = state.tasks.map((task) => task.updatedAt ? task : { ...task, updatedAt: getTaskUpdatedAt(task) })
   const storedAgentConversations = await getAllAgentConversations()
   const agentConversations = mergeAgentConversationsForSync(state.agentConversations, storedAgentConversations)
   const imageIds = collectReferencedImageIds(tasks, agentConversations)
-  const images: StoredImage[] = []
-  const thumbnails: StoredImageThumbnail[] = []
+  const thumbnailIds = new Set<string>()
 
   for (const id of imageIds) {
-    const image = await getImage(id)
-    if (image) images.push(image)
-    const thumbnail = await getStoredImageThumbnail(id)
-    if (thumbnail) thumbnails.push(thumbnail)
+    if (await getStoredImageThumbnail(id)) thumbnailIds.add(id)
   }
 
   return {
     settings: state.settings,
+    settingsUpdatedAt: ensureLocalSettingsUpdatedAt(state.settings),
     tasks,
-    images,
-    thumbnails,
     agentConversations,
+    taskUpdatedAt: new Map(tasks.map((task) => [task.id, getTaskUpdatedAt(task)] as const)),
+    conversationUpdatedAt: new Map(agentConversations.map((conversation) => [conversation.id, conversation.updatedAt] as const)),
+    imageIds,
+    thumbnailIds,
   }
 }
 
-async function applySnapshot(snapshot: ServerSnapshot) {
+async function createLocalPayload(local: LocalSyncState, changes: {
+  settings?: boolean
+  taskIds?: string[]
+  imageIds?: string[]
+  thumbnailIds?: string[]
+  agentConversationIds?: string[]
+}): Promise<SyncPayload> {
+  const payload: SyncPayload = {}
+  if (changes.settings) {
+    payload.settings = local.settings
+    payload.settingsUpdatedAt = local.settingsUpdatedAt
+  }
+  if (changes.taskIds?.length) {
+    const ids = new Set(changes.taskIds)
+    payload.tasks = local.tasks.filter((task) => ids.has(task.id))
+  }
+  if (changes.agentConversationIds?.length) {
+    const ids = new Set(changes.agentConversationIds)
+    payload.agentConversations = local.agentConversations.filter((conversation) => ids.has(conversation.id))
+  }
+  if (changes.imageIds?.length) {
+    const images: StoredImage[] = []
+    for (const id of changes.imageIds) {
+      const image = await getImage(id)
+      if (image) images.push(image)
+    }
+    payload.images = images
+  }
+  if (changes.thumbnailIds?.length) {
+    const thumbnails: StoredImageThumbnail[] = []
+    for (const id of changes.thumbnailIds) {
+      const thumbnail = await getStoredImageThumbnail(id)
+      if (thumbnail) thumbnails.push(thumbnail)
+    }
+    payload.thumbnails = thumbnails
+  }
+  return payload
+}
+
+function hasPayloadData(payload: SyncPayload) {
+  return Boolean(
+    payload.settings ||
+    payload.tasks?.length ||
+    payload.images?.length ||
+    payload.thumbnails?.length ||
+    payload.agentConversations?.length,
+  )
+}
+
+function getSyncChanges(local: LocalSyncState, manifest: ServerManifest) {
+  const serverTasks = getManifestMap(manifest.tasks)
+  const serverImages = getManifestMap(manifest.images)
+  const serverThumbnails = getManifestMap(manifest.thumbnails)
+  const serverConversations = getManifestMap(manifest.agentConversations)
+
+  const pushTaskIds = local.tasks
+    .filter((task) => (local.taskUpdatedAt.get(task.id) ?? 0) > (serverTasks.get(task.id) ?? 0))
+    .map((task) => task.id)
+  const pushImageIds = [...local.imageIds].filter((id) => !serverImages.has(id))
+  const pushThumbnailIds = [...local.thumbnailIds].filter((id) => !serverThumbnails.has(id))
+  const pushAgentConversationIds = local.agentConversations
+    .filter((conversation) => (local.conversationUpdatedAt.get(conversation.id) ?? 0) > (serverConversations.get(conversation.id) ?? 0))
+    .map((conversation) => conversation.id)
+
+  const pullTaskIds = manifest.tasks
+    .filter((task) => task.updatedAt > (local.taskUpdatedAt.get(task.id) ?? 0))
+    .map((task) => task.id)
+  const pullImageIds = manifest.images
+    .filter((image) => !local.imageIds.has(image.id))
+    .map((image) => image.id)
+  const pullThumbnailIds = manifest.thumbnails
+    .filter((thumbnail) => !local.thumbnailIds.has(thumbnail.id))
+    .map((thumbnail) => thumbnail.id)
+  const pullAgentConversationIds = manifest.agentConversations
+    .filter((conversation) => conversation.updatedAt > (local.conversationUpdatedAt.get(conversation.id) ?? 0))
+    .map((conversation) => conversation.id)
+
+  const serverSettingsUpdatedAt = manifest.settings?.updatedAt ?? 0
+  const pushSettings = local.settingsUpdatedAt > serverSettingsUpdatedAt
+  const pullSettings = serverSettingsUpdatedAt > local.settingsUpdatedAt
+
+  return {
+    push: {
+      settings: pushSettings,
+      taskIds: pushTaskIds,
+      imageIds: pushImageIds,
+      thumbnailIds: pushThumbnailIds,
+      agentConversationIds: pushAgentConversationIds,
+    },
+    pull: {
+      settings: pullSettings,
+      tasks: pullTaskIds,
+      images: pullImageIds,
+      thumbnails: pullThumbnailIds,
+      agentConversations: pullAgentConversationIds,
+    },
+  }
+}
+
+async function applyPartialSnapshot(snapshot: ServerSnapshot) {
   const state = useStore.getState()
 
   for (const task of snapshot.tasks) await putTask(task)
   for (const image of snapshot.images) await putImage(image)
   for (const thumbnail of snapshot.thumbnails) await putImageThumbnail(thumbnail)
 
-  state.setSettings(snapshot.settings ? normalizeSettings(snapshot.settings) : normalizeSettings(DEFAULT_SETTINGS))
-  state.setTasks(snapshot.tasks)
-  useStore.setState({
-    agentConversations: snapshot.agentConversations,
-    activeAgentConversationId: snapshot.agentConversations[0]?.id ?? null,
-    agentConversationsLoaded: true,
-    prompt: '',
-    inputImages: [],
-    maskDraft: null,
-    galleryInputDraft: null,
-    agentInputDrafts: {},
-  })
+  if (snapshot.settings) {
+    state.setSettings(normalizeSettings(snapshot.settings))
+    if (snapshot.settingsUpdatedAt) writeLocalSettingsUpdatedAt(snapshot.settingsUpdatedAt)
+  }
+
+  if (snapshot.tasks.length) {
+    const byId = new Map(state.tasks.map((task) => [task.id, task] as const))
+    for (const task of snapshot.tasks) {
+      const existing = byId.get(task.id)
+      if (!existing || getTaskUpdatedAt(task) >= getTaskUpdatedAt(existing)) byId.set(task.id, task)
+    }
+    state.setTasks([...byId.values()].sort((a, b) => b.createdAt - a.createdAt))
+  }
+
+  if (snapshot.agentConversations.length) {
+    const current = useStore.getState().agentConversations
+    const byId = new Map(current.map((conversation) => [conversation.id, conversation] as const))
+    for (const conversation of snapshot.agentConversations) {
+      const existing = byId.get(conversation.id)
+      if (!existing || conversation.updatedAt >= existing.updatedAt) byId.set(conversation.id, conversation)
+    }
+    const agentConversations = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+    useStore.setState((latest) => ({
+      agentConversations,
+      activeAgentConversationId: latest.activeAgentConversationId && agentConversations.some((conversation) => conversation.id === latest.activeAgentConversationId)
+        ? latest.activeAgentConversationId
+        : agentConversations[0]?.id ?? null,
+      agentConversationsLoaded: true,
+    }))
+  }
 }
 
 export async function loadServerSnapshot() {
   const snapshot = await serverApi<ServerSnapshot>('/api/sync/snapshot')
-  await applySnapshot(snapshot)
+  await applyPartialSnapshot(snapshot)
   return snapshotHasData(snapshot)
 }
 
 export async function syncLocalDataToServer() {
-  const payload = await createLocalPayload()
-  const snapshot = await serverApi<ServerSnapshot>('/api/sync/push', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-  await applySnapshot(snapshot)
-  return snapshot
+  const manifest = await serverApi<ServerManifest>('/api/sync/manifest')
+  const local = await collectLocalSyncState()
+  const changes = getSyncChanges(local, manifest)
+  const payload = await createLocalPayload(local, changes.push)
+
+  if (hasPayloadData(payload)) {
+    const pushedManifest = await serverApi<ServerManifest>('/api/sync/push', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    if (payload.settings && pushedManifest.settings?.updatedAt) writeLocalSettingsUpdatedAt(pushedManifest.settings.updatedAt)
+  }
+
+  const hasPull = changes.pull.settings || changes.pull.tasks.length || changes.pull.images.length || changes.pull.thumbnails.length || changes.pull.agentConversations.length
+  if (hasPull) {
+    const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+      method: 'POST',
+      body: JSON.stringify(changes.pull),
+    })
+    await applyPartialSnapshot(snapshot)
+  }
+
+  return { pushed: payload, pulled: changes.pull }
 }
 
 export async function saveServerSettings(settings: AppSettings) {
-  await serverApi('/api/settings', {
+  const settingsUpdatedAt = Date.now()
+  writeLocalSettingsUpdatedAt(settingsUpdatedAt)
+  const result = await serverApi<{ updatedAt?: number }>('/api/settings', {
     method: 'PUT',
     body: JSON.stringify({ settings }),
   })
+  if (typeof result.updatedAt === 'number') writeLocalSettingsUpdatedAt(result.updatedAt)
 }
 
 export async function bootstrapServerData() {
-  const snapshot = await serverApi<ServerSnapshot>('/api/sync/snapshot')
-  await applySnapshot(snapshot)
+  const manifest = await serverApi<ServerManifest>('/api/sync/manifest')
+  const local = await collectLocalSyncState()
+  const changes = getSyncChanges(local, manifest)
+  const hasPull = changes.pull.settings || changes.pull.tasks.length || changes.pull.images.length || changes.pull.thumbnails.length || changes.pull.agentConversations.length
+  if (!hasPull) return snapshotHasData({
+    settings: manifest.settings ? local.settings : null,
+    settingsRevision: manifest.settings?.revision ?? 0,
+    tasks: manifest.tasks.length ? local.tasks : [],
+    images: [],
+    thumbnails: [],
+    agentConversations: manifest.agentConversations.length ? local.agentConversations : [],
+    serverTime: manifest.serverTime,
+  }) ? 'pulled' as const : 'empty' as const
+
+  const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+    method: 'POST',
+    body: JSON.stringify(changes.pull),
+  })
+  await applyPartialSnapshot(snapshot)
   return snapshotHasData(snapshot) ? 'pulled' as const : 'empty' as const
 }
 
@@ -266,19 +483,39 @@ export async function importServerData(file: File, options: { importConfig?: boo
     }
   }
 
-  const payload: Partial<SyncPayload> = {}
-  if (options.importConfig && data.settings) payload.settings = data.settings
+  const payload: SyncPayload = {}
+  const snapshot: ServerSnapshot = {
+    settings: null,
+    settingsRevision: 0,
+    settingsUpdatedAt: 0,
+    tasks: [],
+    images: [],
+    thumbnails: [],
+    agentConversations: [],
+    serverTime: Date.now(),
+  }
+  if (options.importConfig && data.settings) {
+    const settingsUpdatedAt = Date.now()
+    payload.settings = data.settings
+    payload.settingsUpdatedAt = settingsUpdatedAt
+    snapshot.settings = data.settings
+    snapshot.settingsUpdatedAt = settingsUpdatedAt
+  }
   if (options.importTasks) {
     payload.tasks = data.tasks ?? []
     payload.images = images
     payload.thumbnails = thumbnails
     payload.agentConversations = data.agentConversations ?? []
+    snapshot.tasks = payload.tasks
+    snapshot.images = images
+    snapshot.thumbnails = thumbnails
+    snapshot.agentConversations = payload.agentConversations
   }
 
-  const snapshot = await serverApi<ServerSnapshot>('/api/sync/push', {
+  await serverApi<ServerManifest>('/api/sync/push', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
-  await applySnapshot(snapshot)
+  await applyPartialSnapshot(snapshot)
   return snapshot
 }

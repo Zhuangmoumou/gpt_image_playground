@@ -96,6 +96,7 @@ export interface AppSettings {
   agentMaxToolRounds: number
   agentWebSearch: boolean
   serverRequestMode: boolean
+  serverBackgroundMode: boolean
   enableGlassEffect: boolean
   profiles: ApiProfile[]
   activeProfileId: string
@@ -188,6 +189,10 @@ export interface TaskRecord {
   finishedAt: number | null
   /** 总耗时毫秒 */
   elapsed: number | null
+  /** 最后更新时间，用于服务端增量同步冲突判断 */
+  updatedAt?: number
+  /** 服务端后台生成任务 ID */
+  serverJobId?: string
   /** 是否收藏 */
   isFavorite?: boolean
   /** 来源模式：画廊 / Agent */
@@ -236,6 +241,13 @@ export interface AgentRound {
   outputTaskIds: string[]
   responseId?: string
   responseOutput?: ResponsesOutputItem[]
+  serverJobId?: string
+  apiProvider?: ApiProvider
+  apiProfileId?: string
+  apiProfileName?: string
+  apiMode?: ApiMode
+  apiModel?: string
+  params?: TaskParams
   status: AgentRoundStatus
   error: string | null
   createdAt: number

@@ -25,6 +25,7 @@ export interface AgentApiResult {
 }
 
 function readCookie(name: string) {
+  if (typeof document === 'undefined') return undefined
   const prefix = `${name}=`
   return document.cookie
     .split(';')
@@ -149,8 +150,13 @@ function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: 
   return tool
 }
 
-function createAgentTools(params: TaskParams, profile: ApiProfile, settings: AppSettings, maskDataUrl?: string): Array<Record<string, unknown>> {
+function createAgentTools(params: TaskParams, profile: ApiProfile, settings: AppSettings, maskDataUrl?: string, options: { includeAppFunctionTools?: boolean } = {}): Array<Record<string, unknown>> {
   const tools: Array<Record<string, unknown>> = [createImageTool(params, profile, maskDataUrl)]
+
+  if (options.includeAppFunctionTools === false) {
+    if (settings.agentWebSearch) tools.push({ type: 'web_search' })
+    return tools
+  }
 
   // generate_image_batch: custom function tool for concurrent multi-image generation
   tools.push({
@@ -640,6 +646,27 @@ async function parseAgentStreamResponse(
   }
 }
 
+export function createAgentResponsesBody(opts: {
+  settings: AppSettings
+  profile: ApiProfile
+  params: TaskParams
+  input: unknown
+  maskDataUrl?: string
+  stream?: boolean
+  includeAppFunctionTools?: boolean
+}): Record<string, unknown> {
+  const { settings, profile, params, input, maskDataUrl, stream = profile.streamImages, includeAppFunctionTools = true } = opts
+  const toolProfile = stream ? profile : { ...profile, streamImages: false }
+  const body: Record<string, unknown> = {
+    model: profile.model || settings.model,
+    instructions: createAgentInstructions(settings),
+    input,
+    tools: createAgentTools(params, toolProfile, settings, maskDataUrl, { includeAppFunctionTools }),
+  }
+  if (stream) body.stream = true
+  return body
+}
+
 export async function callAgentResponsesApi(opts: {
   settings: AppSettings
   profile: ApiProfile
@@ -664,15 +691,7 @@ export async function callAgentResponsesApi(opts: {
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    const body: Record<string, unknown> = {
-      model: profile.model || settings.model,
-      instructions: createAgentInstructions(settings),
-      input,
-      tools: createAgentTools(params, profile, settings, maskDataUrl),
-    }
-    if (profile.streamImages) {
-      body.stream = true
-    }
+    const body = createAgentResponsesBody({ settings, profile, params, input, maskDataUrl })
 
     const response = await createResponsesRequest(settings, profile, body, controller.signal)
 

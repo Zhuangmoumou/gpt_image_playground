@@ -493,6 +493,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
     serverRequestMode: typeof record.serverRequestMode === 'boolean' ? record.serverRequestMode : true,
+    serverBackgroundMode: typeof record.serverBackgroundMode === 'boolean' ? record.serverBackgroundMode : false,
     enableGlassEffect: typeof record.enableGlassEffect === 'boolean' ? record.enableGlassEffect : false,
     profiles,
     activeProfileId,
@@ -781,5 +782,6 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   agentMaxToolRounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
   agentWebSearch: false,
   serverRequestMode: true,
+  serverBackgroundMode: false,
   enableGlassEffect: false,
 })
