@@ -29,6 +29,10 @@ export default defineConfig(({ command }) => {
     },
     server: {
       host: true,
+      fs: {
+        strict: true,
+        deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/data/**'],
+      },
       proxy:
         devProxyConfig?.enabled
           ? {
