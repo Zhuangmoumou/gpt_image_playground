@@ -10,8 +10,8 @@ export { normalizeBaseUrl } from './devProxy'
 export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult> {
   const profile = getActiveApiProfile(opts.settings)
   if (opts.settings.serverRequestMode) {
-    if (profile.provider === 'fal' || profile.apiMode === 'responses') {
-      throw new Error('服务端发出请求暂时仅支持 OpenAI 兼容 Images API；请关闭该选项或切换到 Images API 配置。')
+    if (profile.provider === 'fal') {
+      throw new Error('服务端发出请求暂时仅支持 OpenAI 兼容接口；请关闭该选项或切换到 OpenAI 兼容配置。')
     }
     return serverApi<CallApiResult>('/api/generation/images', {
       method: 'POST',

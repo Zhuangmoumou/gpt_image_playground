@@ -458,9 +458,13 @@ export default function InputBar() {
   const handleDeleteSelected = useCallback(() => {
     setConfirmDialog({
       title: '批量删除',
-      message: `确定要删除选中的 ${selectedTaskIds.length} 条记录吗？`,
-      action: () => {
-        removeMultipleTasks(selectedTaskIds)
+      message: `这会先在本地标记选中的 ${selectedTaskIds.length} 条记录，避免直接丢数据。你可以选择仅本地标记，或立即同步删除到服务端。`,
+      checkbox: {
+        label: '立即同步删除到服务端',
+        tone: 'danger',
+      },
+      action: (syncToServer = false) => {
+        removeMultipleTasks(selectedTaskIds, syncToServer)
       },
     })
   }, [selectedTaskIds, setConfirmDialog])

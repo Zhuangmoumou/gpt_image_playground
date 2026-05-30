@@ -48,7 +48,7 @@ function createResponsesRequest(settings: AppSettings, profile: ApiProfile, body
       headers: createServerRequestHeaders(),
       credentials: 'same-origin',
       cache: 'no-store',
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ settings, body }),
       signal,
     })
   }

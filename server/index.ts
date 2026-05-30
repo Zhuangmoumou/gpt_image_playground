@@ -9,7 +9,7 @@ import { runMigrations } from './db.js'
 import { registerAuthRoutes } from './routes/auth.js'
 import { registerSettingsRoutes } from './routes/settings.js'
 import { registerSyncRoutes } from './routes/sync.js'
-import { registerGenerationRoutes } from './routes/generation.js'
+import { registerGenerationRoutes, resumePendingGenerationJobs } from './routes/generation.js'
 import { formatRequest, logError, logInfo, logOk, logWarn } from './logger.js'
 import { migrateUserSettingsApiKeys } from './settings.js'
 
@@ -50,6 +50,7 @@ await registerAuthRoutes(app)
 await registerSettingsRoutes(app)
 await registerSyncRoutes(app)
 await registerGenerationRoutes(app)
+resumePendingGenerationJobs()
 
 const distDir = resolve(process.cwd(), 'dist')
 if (existsSync(distDir)) {

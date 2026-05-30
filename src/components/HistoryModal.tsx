@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { removeMultipleTasks, useStore } from '../store'
+import { markAgentConversationForDeletion, useStore } from '../store'
 import type { AgentConversation } from '../types'
 import { useTooltip } from '../hooks/useTooltip'
 import { CloseIcon, EditIcon, TrashIcon } from './icons'
@@ -81,6 +81,14 @@ function getConversationSearchText(conversation: AgentConversation) {
   ].join('\n').toLocaleLowerCase()
 }
 
+function getConversationSyncLabel(conversation: AgentConversation) {
+  if (conversation.syncState === 'pending_delete_confirm') return '待确认删除'
+  if (conversation.syncState === 'pending_delete_push') return '待同步删除'
+  if (conversation.syncState === 'pending_push') return '待同步'
+  if (conversation.syncState === 'conflict') return '冲突'
+  return '已同步'
+}
+
 type HistoryModalProps = {
   onClose: () => void
   ignoreOutsideClickRef?: RefObject<HTMLElement | null>
@@ -91,7 +99,6 @@ export default function HistoryModal({ onClose, ignoreOutsideClickRef }: History
   const activeConversationId = useStore((s) => s.activeAgentConversationId)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
-  const deleteConversation = useStore((s) => s.deleteAgentConversation)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const confirmDialogOpen = useStore((s) => Boolean(s.confirmDialog))
   const setAppMode = useStore((s) => s.setAppMode)
@@ -117,7 +124,7 @@ export default function HistoryModal({ onClose, ignoreOutsideClickRef }: History
   }, [setEditingId])
 
   const sortedConversations = useMemo(
-    () => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt),
+    () => [...conversations].filter((conversation) => !conversation.deletedAt).sort((a, b) => b.updatedAt - a.updatedAt),
     [conversations],
   )
 
@@ -160,35 +167,16 @@ export default function HistoryModal({ onClose, ignoreOutsideClickRef }: History
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
-    const targetConversation = conversations.find((item) => item.id === id) ?? null
-    const roundIds = new Set(targetConversation?.rounds.map((round) => round.id) ?? [])
-    const roundTaskIds = targetConversation?.rounds.flatMap((round) => round.outputTaskIds) ?? []
-    const relatedTasks = tasks.filter((task) =>
-      task.agentConversationId === id || Boolean(task.agentRoundId && roundIds.has(task.agentRoundId)),
-    )
-    const existingTaskIds = new Set(tasks.map((task) => task.id))
-    const relatedTaskIds = Array.from(new Set([...roundTaskIds, ...relatedTasks.map((task) => task.id)]))
-      .filter((taskId) => existingTaskIds.has(taskId))
-    const relatedTaskIdSet = new Set(relatedTaskIds)
-    const generatedImageCount = new Set(
-      tasks
-        .filter((task) => relatedTaskIdSet.has(task.id))
-        .flatMap((task) => task.outputImages || []),
-    ).size
-
     setConfirmDialog({
       title: '删除对话',
-      message: '确定要删除这个 Agent 对话吗？',
-      checkbox: generatedImageCount > 0
-        ? {
-            label: `同时删除对话中生成的图片（${generatedImageCount} 张）`,
-            tone: 'danger',
-          }
-        : undefined,
-      action: async (deleteGeneratedImages = false) => {
-        deleteConversation(id)
-        if (deleteGeneratedImages && relatedTaskIds.length > 0) await removeMultipleTasks(relatedTaskIds)
-        if (conversations.length <= 1) {
+      message: '这会先在本地标记整个会话记录，避免直接丢数据。你可以选择仅本地标记，或立即同步删除到服务端。',
+      checkbox: {
+        label: '立即同步删除到服务端',
+        tone: 'danger',
+      },
+      action: async (syncToServer = false) => {
+        await markAgentConversationForDeletion(id, syncToServer)
+        if (conversations.filter((conversation) => !conversation.deletedAt).length <= 1) {
           onClose()
         }
       },
@@ -272,8 +260,9 @@ export default function HistoryModal({ onClose, ignoreOutsideClickRef }: History
                       <div className={`text-sm truncate ${c.id === activeConversationId ? 'text-gray-900 dark:text-white font-medium' : 'text-gray-600 dark:text-gray-300'}`}>
                         {c.title}
                       </div>
-                      <div className="hidden sm:block mt-0.5 text-[11px] leading-none text-gray-500">
-                        {formatDetailTime(c.updatedAt)}
+                      <div className="mt-0.5 flex items-center gap-2 text-[11px] leading-none text-gray-500">
+                        <span>{getConversationSyncLabel(c)}</span>
+                        <span className="hidden sm:inline">{formatDetailTime(c.updatedAt)}</span>
                       </div>
                     </div>
                   )}

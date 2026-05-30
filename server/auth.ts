@@ -193,6 +193,8 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply):
   if (row && Date.now() - row.last_seen_at > SESSION_TOUCH_INTERVAL_MS) {
     auth.session.expiresAt = touchSession(auth.session.id)
     reply.setCookie(SESSION_COOKIE, request.cookies[SESSION_COOKIE]!, getSessionCookieOptions(auth.session.expiresAt))
+    const csrfToken = request.cookies[CSRF_COOKIE]
+    if (csrfToken) reply.setCookie(CSRF_COOKIE, csrfToken, getCsrfCookieOptions(auth.session.expiresAt))
   }
 
   return auth

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
+import { pullSpecificThumbnailsToLocal } from '../lib/serverSync'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
@@ -265,9 +266,15 @@ export default function TaskCard({
 
     if (imageId) {
       unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail)
-      ensureImageThumbnailCached(imageId).then((thumbnail) => {
-        if (cancelled || !thumbnail) return
-        applyThumbnail(thumbnail)
+      ensureImageThumbnailCached(imageId).then(async (thumbnail) => {
+        if (cancelled) return
+        if (thumbnail) {
+          applyThumbnail(thumbnail)
+          return
+        }
+        await pullSpecificThumbnailsToLocal([imageId]).catch(() => {})
+        const remoteThumbnail = await ensureImageThumbnailCached(imageId).catch(() => undefined)
+        if (!cancelled && remoteThumbnail) applyThumbnail(remoteThumbnail)
       }).catch(() => {
         if (!cancelled) setThumbSrc('')
       })
@@ -319,6 +326,15 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const syncLabel = task.syncState === 'pending_delete_confirm'
+    ? '待确认删除'
+    : task.syncState === 'pending_delete_push'
+    ? '待同步删除'
+    : task.syncState === 'pending_push'
+    ? '待同步'
+    : task.syncState === 'conflict'
+    ? '冲突'
+    : '已同步'
 
   return (
     <div className="relative rounded-xl">
@@ -392,6 +408,11 @@ export default function TaskCard({
           </svg>
         </div>
       )}
+      <div className="absolute bottom-2 left-2 z-10">
+        <span className="rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white backdrop-blur-sm">
+          {syncLabel}
+        </span>
+      </div>
       <div className="flex h-40">
         {/* 左侧图片区域 */}
         <div className="w-40 min-w-[10rem] h-full bg-gray-100 dark:bg-black/20 relative flex items-center justify-center overflow-hidden flex-shrink-0">

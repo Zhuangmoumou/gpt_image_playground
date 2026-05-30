@@ -33,6 +33,7 @@ export default function TaskGrid() {
     const q = searchQuery.trim().toLowerCase()
     
     return sorted.filter((t) => {
+      if (t.deletedAt) return false
       if (filterFavorite && !t.isFavorite) return false
       const matchStatus = filterStatus === 'all' || t.status === filterStatus
       if (!matchStatus) return false
@@ -47,8 +48,12 @@ export default function TaskGrid() {
   const handleDelete = (task: typeof tasks[0]) => {
     setConfirmDialog({
       title: '删除记录',
-      message: '确定要删除这条记录吗？关联的图片资源也会被清理（如果没有其他任务引用）。',
-      action: () => removeTask(task),
+      message: '这会先在本地标记删除，避免直接丢数据。你可以选择仅本地标记，或立即同步删除到服务端。',
+      checkbox: {
+        label: '立即同步删除到服务端',
+        tone: 'danger',
+      },
+      action: (syncToServer = false) => removeTask(task, syncToServer),
     })
   }
 

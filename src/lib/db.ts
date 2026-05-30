@@ -6,9 +6,9 @@ const STORE_TASKS = 'tasks'
 const STORE_IMAGES = 'images'
 const STORE_THUMBNAILS = 'thumbnails'
 const STORE_AGENT_CONVERSATIONS = 'agentConversations'
-const THUMBNAIL_MAX_SIZE = 720
-const THUMBNAIL_QUALITY = 0.9
-const THUMBNAIL_VERSION = 2
+const THUMBNAIL_MAX_SIZE = 480
+const THUMBNAIL_QUALITY = 0.72
+const THUMBNAIL_VERSION = 3
 
 export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
@@ -146,6 +146,8 @@ export async function getImageThumbnail(id: string): Promise<StoredImageThumbnai
       width: legacyImage.width,
       height: legacyImage.height,
       thumbnailVersion: THUMBNAIL_VERSION,
+      updatedAt: legacyImage.updatedAt ?? legacyImage.createdAt ?? Date.now(),
+      syncState: legacyImage.syncState,
     }
     await putImageThumbnail(thumbnail)
     if ((!image.width || !image.height) && thumbnail.width && thumbnail.height) {
@@ -162,6 +164,8 @@ export async function getImageThumbnail(id: string): Promise<StoredImageThumbnai
     width: metadata.width,
     height: metadata.height,
     thumbnailVersion: THUMBNAIL_VERSION,
+    updatedAt: Date.now(),
+    syncState: 'pending_push',
   }
   await putImageThumbnail(thumbnail)
   if (metadata.width && metadata.height && (image.width !== metadata.width || image.height !== metadata.height)) {
@@ -182,6 +186,10 @@ export function getAllImageIds(): Promise<string[]> {
 
 export function putImage(image: StoredImage): Promise<IDBValidKey> {
   return dbTransaction(STORE_IMAGES, 'readwrite', (s) => s.put(image))
+}
+
+export function deleteStoredOriginalImage(id: string): Promise<undefined> {
+  return dbTransaction(STORE_IMAGES, 'readwrite', (s) => s.delete(id))
 }
 
 export function deleteImage(id: string): Promise<undefined> {
@@ -248,10 +256,13 @@ export async function storeImage(dataUrl: string, source: NonNullable<StoredImag
   const existing = await getImage(id)
   if (!existing) {
     const thumbnail = await safeCreateImageThumbnail(dataUrl)
+    const now = Date.now()
     await putImage({
       id,
       dataUrl,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+      syncState: 'pending_push',
       source,
       width: thumbnail.width,
       height: thumbnail.height,
@@ -260,6 +271,8 @@ export async function storeImage(dataUrl: string, source: NonNullable<StoredImag
       await putImageThumbnail({
         id,
         thumbnailDataUrl: thumbnail.thumbnailDataUrl,
+        updatedAt: now,
+        syncState: 'pending_push',
         width: thumbnail.width,
         height: thumbnail.height,
         thumbnailVersion: THUMBNAIL_VERSION,
@@ -268,12 +281,14 @@ export async function storeImage(dataUrl: string, source: NonNullable<StoredImag
   } else if ((await getStoredImageThumbnail(id))?.thumbnailVersion !== THUMBNAIL_VERSION) {
     const thumbnail = await safeCreateImageThumbnail(existing.dataUrl)
     if (thumbnail.width && thumbnail.height && (existing.width !== thumbnail.width || existing.height !== thumbnail.height)) {
-      await putImage({ ...existing, width: thumbnail.width, height: thumbnail.height })
+      await putImage({ ...existing, width: thumbnail.width, height: thumbnail.height, updatedAt: existing.updatedAt ?? Date.now() })
     }
     if (thumbnail.thumbnailDataUrl) {
       await putImageThumbnail({
         id,
         thumbnailDataUrl: thumbnail.thumbnailDataUrl,
+        updatedAt: Date.now(),
+        syncState: 'pending_push',
         width: thumbnail.width,
         height: thumbnail.height,
         thumbnailVersion: THUMBNAIL_VERSION,

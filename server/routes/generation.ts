@@ -16,6 +16,7 @@ const requestSchema = z.object({
 })
 
 const responsesProxySchema = z.object({
+  settings: z.record(z.string(), z.unknown()).optional(),
   body: z.record(z.string(), z.unknown()),
 })
 
@@ -133,7 +134,7 @@ function extractAgentImages(payload: { output?: Array<Record<string, unknown>> }
 }
 
 async function performResponsesRequest(userId: string, body: z.infer<typeof responsesProxySchema>) {
-  const rawSettings = getRawUserSettings(userId)?.settings ?? {}
+  const rawSettings = body.settings ?? getRawUserSettings(userId)?.settings ?? {}
   const profile = getActiveProfile(rawSettings)
   const apiKey = typeof profile.apiKey === 'string' ? profile.apiKey.trim() : ''
   if (!apiKey) throw Object.assign(new Error('请先配置 API Key'), { statusCode: 400 })
@@ -150,8 +151,97 @@ async function performResponsesRequest(userId: string, body: z.infer<typeof resp
   return response
 }
 
+function createResponsesImageTool(params: Record<string, unknown>, isEdit: boolean, maskDataUrl?: string): Record<string, unknown> {
+  const tool: Record<string, unknown> = {
+    type: 'image_generation',
+    action: isEdit ? 'edit' : 'generate',
+    size: typeof params.size === 'string' ? params.size : 'auto',
+    output_format: typeof params.output_format === 'string' ? params.output_format : 'png',
+    moderation: params.moderation === 'low' ? 'low' : 'auto',
+  }
+  if (['auto', 'low', 'medium', 'high'].includes(String(params.quality))) tool.quality = params.quality
+  if (typeof params.output_compression === 'number' && tool.output_format !== 'png') tool.output_compression = params.output_compression
+  if (maskDataUrl) tool.input_image_mask = { image_url: maskDataUrl }
+  return tool
+}
+
+function createResponsesInput(prompt: string, inputImageDataUrls: string[]) {
+  const text = `Use the following text as the complete prompt. Do not rewrite it:\n${prompt}`
+  if (!inputImageDataUrls.length) return text
+  return [{
+    role: 'user',
+    content: [
+      { type: 'input_text', text },
+      ...inputImageDataUrls.map((dataUrl) => ({ type: 'input_image', image_url: dataUrl })),
+    ],
+  }]
+}
+
+function parseResponsesImageResults(payload: { output?: Array<Record<string, unknown>> }, fallbackMime: string) {
+  const output = payload.output
+  if (!Array.isArray(output) || !output.length) throw Object.assign(new Error('接口未返回图片数据'), { statusCode: 502, rawResponsePayload: JSON.stringify(payload, null, 2) })
+  const results: Array<{ image: string; actualParams?: Record<string, unknown>; revisedPrompt?: string }> = []
+  for (const item of output) {
+    if (item?.type !== 'image_generation_call') continue
+    const result = item.result
+    const b64 = typeof result === 'string'
+      ? result
+      : result && typeof result === 'object'
+      ? getStringValue(result as Record<string, unknown>, 'b64_json') ?? getStringValue(result as Record<string, unknown>, 'base64') ?? getStringValue(result as Record<string, unknown>, 'image') ?? getStringValue(result as Record<string, unknown>, 'data') ?? ''
+      : ''
+    if (!b64.trim()) continue
+    results.push({
+      image: normalizeBase64Image(b64, fallbackMime),
+      actualParams: pickActualParams(item),
+      revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+    })
+  }
+  if (!results.length) throw Object.assign(new Error('接口没有返回可识别的图片数据'), { statusCode: 502, rawResponsePayload: JSON.stringify(payload, null, 2) })
+  return results
+}
+
+async function performResponsesImageRequest(userId: string, profile: Record<string, unknown>, body: z.infer<typeof requestSchema>) {
+  const outputFormat = typeof body.params.output_format === 'string' ? body.params.output_format : 'png'
+  const fallbackMime = outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png'
+  const apiKey = typeof profile.apiKey === 'string' ? profile.apiKey.trim() : ''
+  const response = await fetch(buildProviderUrl(typeof profile.baseUrl === 'string' ? profile.baseUrl : '', 'responses'), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: typeof profile.model === 'string' ? profile.model : 'gpt-image-2',
+      input: createResponsesInput(body.prompt, body.inputImageDataUrls),
+      tools: [createResponsesImageTool(body.params, body.inputImageDataUrls.length > 0, body.maskDataUrl)],
+      tool_choice: 'required',
+    }),
+  })
+  const responseText = await response.text()
+  let payload: { output?: Array<Record<string, unknown>> } | null = null
+  try {
+    payload = responseText ? JSON.parse(responseText) : null
+  } catch {
+    payload = null
+  }
+  if (!response.ok) {
+    const message = payload && typeof payload === 'object' && 'error' in payload
+      ? JSON.stringify((payload as { error: unknown }).error)
+      : responseText || `服务端请求失败：${response.status}`
+    throw Object.assign(new Error(message), { statusCode: response.status, rawResponsePayload: responseText || null })
+  }
+  if (!payload) throw Object.assign(new Error('Responses API 未返回 JSON 响应'), { statusCode: 502 })
+  const imageResults = parseResponsesImageResults(payload, fallbackMime)
+  return {
+    images: imageResults.map((result) => result.image),
+    actualParams: imageResults[0]?.actualParams,
+    actualParamsList: imageResults.map((result) => result.actualParams),
+    revisedPrompts: imageResults.map((result) => result.revisedPrompt),
+  }
+}
+
 async function performImagesRequest(userId: string, body: z.infer<typeof requestSchema>) {
-  const rawSettings = getRawUserSettings(userId)?.settings ?? body.settings
+  const rawSettings = body.settings ?? getRawUserSettings(userId)?.settings ?? {}
   const profile = getActiveProfile(rawSettings)
   const provider = typeof profile.provider === 'string' ? profile.provider : 'openai'
   if (provider !== 'openai' && !provider.startsWith('custom-')) {
@@ -160,6 +250,10 @@ async function performImagesRequest(userId: string, body: z.infer<typeof request
 
   const apiKey = typeof profile.apiKey === 'string' ? profile.apiKey.trim() : ''
   if (!apiKey) throw Object.assign(new Error('请先配置 API Key'), { statusCode: 400 })
+
+  if (profile.apiMode === 'responses') {
+    return performResponsesImageRequest(userId, profile, body)
+  }
 
   const outputFormat = typeof body.params.output_format === 'string' ? body.params.output_format : 'png'
   const fallbackMime = outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png'
@@ -284,8 +378,9 @@ function serializeJob(row: GenerationJobRow) {
 
 async function runGenerationJob(jobId: string, userId: string) {
   const startedAt = Date.now()
-  db.prepare('UPDATE generation_jobs SET status = ?, updated_at = ?, started_at = ? WHERE id = ? AND user_id = ? AND status = ?')
+  const updateResult = db.prepare('UPDATE generation_jobs SET status = ?, updated_at = ?, started_at = ? WHERE id = ? AND user_id = ? AND status = ?')
     .run('running', startedAt, startedAt, jobId, userId, 'queued')
+  if (updateResult.changes === 0) return
 
   const row = db.prepare('SELECT kind, request_json FROM generation_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { kind: 'images' | 'responses'; request_json: string } | undefined
   if (!row) return
@@ -302,6 +397,22 @@ async function runGenerationJob(jobId: string, userId: string) {
     const finishedAt = Date.now()
     db.prepare('UPDATE generation_jobs SET status = ?, error_text = ?, updated_at = ?, finished_at = ? WHERE id = ? AND user_id = ?')
       .run('error', err instanceof Error ? err.message : String(err), finishedAt, finishedAt, jobId, userId)
+  }
+}
+
+export function resumePendingGenerationJobs() {
+  const rows = db.prepare(`
+    SELECT id, user_id, status
+    FROM generation_jobs
+    WHERE status IN ('queued', 'running')
+  `).all() as Array<{ id: string; user_id: string; status: GenerationJobStatus }>
+
+  for (const row of rows) {
+    if (row.status === 'running') {
+      db.prepare('UPDATE generation_jobs SET status = ?, updated_at = ?, started_at = NULL WHERE id = ? AND user_id = ? AND status = ?')
+        .run('queued', Date.now(), row.id, row.user_id, 'running')
+    }
+    void runGenerationJob(row.id, row.user_id)
   }
 }
 

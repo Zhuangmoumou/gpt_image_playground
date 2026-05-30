@@ -59,10 +59,12 @@ function triggerDownload(blob: Blob, fileName: string) {
   const a = document.createElement('a')
   a.href = url
   a.download = fileName
+  a.rel = 'noopener'
+  a.style.display = 'none'
   document.body.appendChild(a)
-  a.click()
+  a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
   document.body.removeChild(a)
-  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 function getBlobExtension(blob: Blob): string {

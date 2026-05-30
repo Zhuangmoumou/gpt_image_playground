@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, updateTaskInStore, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, markAgentConversationForDeletion, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, updateTaskInStore, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
@@ -119,6 +119,14 @@ const AGENT_STOPPED_MESSAGE = '已停止生成。'
 
 function formatTime(value: number) {
   return new Date(value).toLocaleString()
+}
+
+function getConversationSyncLabel(conversation: AgentConversation) {
+  if (conversation.syncState === 'pending_delete_confirm') return '待确认删除'
+  if (conversation.syncState === 'pending_delete_push') return '待同步删除'
+  if (conversation.syncState === 'pending_push') return '待同步'
+  if (conversation.syncState === 'conflict') return '冲突'
+  return '已同步'
 }
 
 function AgentWebSearchInlineStatus({ status }: { status: AgentWebSearchStatus }) {
@@ -314,7 +322,6 @@ export default function AgentWorkspace() {
   const createConversation = useStore((s) => s.createAgentConversation)
   const setActiveConversationId = useStore((s) => s.setActiveAgentConversationId)
   const renameConversation = useStore((s) => s.renameAgentConversation)
-  const deleteConversation = useStore((s) => s.deleteAgentConversation)
   const sidebarCollapsed = useStore((s) => s.agentSidebarCollapsed)
   const setSidebarCollapsed = useStore((s) => s.setAgentSidebarCollapsed)
   const agentMobileHeaderVisible = useStore((s) => s.agentMobileHeaderVisible)
@@ -336,7 +343,7 @@ export default function AgentWorkspace() {
   const setActiveAgentRoundId = useStore((s) => s.setActiveAgentRoundId)
   const showToast = useStore((s) => s.showToast)
   const agentGeneratingTitleIds = useStore((s) => s.agentGeneratingTitleIds)
-  const conversation = conversations.find((item) => item.id === activeConversationId) ?? null
+  const conversation = conversations.find((item) => item.id === activeConversationId && !item.deletedAt) ?? null
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [editingConversationTitle, setEditingConversationTitle] = useState('')
 
@@ -346,6 +353,7 @@ export default function AgentWorkspace() {
   const [scrollTargetRoundId, setScrollTargetRoundId] = useState<string | null>(null)
   const [pullDownOffset, setPullDownOffset] = useState(0)
   const [mobileTopBarVisible, setMobileTopBarVisible] = useState(true)
+  const [now, setNow] = useState(Date.now())
   const [conversationSearchQuery, setConversationSearchQuery] = useState('')
   const [conversationActionsId, setConversationActionsId] = useState<string | null>(null)
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true)
@@ -454,28 +462,8 @@ export default function AgentWorkspace() {
     if (appMode !== 'agent') return
 
     setMobileTopBarVisible(true)
-    let lastScrollY = window.scrollY
-    let ticking = false
-
     const handleScroll = () => {
-      if (ticking) return
-
-      window.requestAnimationFrame(() => {
-        const currentScrollY = window.scrollY
-        if (currentScrollY < 20) {
-          setMobileTopBarVisible(true)
-        } else if (currentScrollY > lastScrollY + 10) {
-          setMobileTopBarVisible(false)
-        } else if (currentScrollY < lastScrollY - 10) {
-          setMobileTopBarVisible(true)
-        }
-
-        updateIsScrolledToBottom()
-
-        lastScrollY = currentScrollY
-        ticking = false
-      })
-      ticking = true
+      updateIsScrolledToBottom()
     }
 
     const initialFrame = window.requestAnimationFrame(updateIsScrolledToBottom)
@@ -496,10 +484,11 @@ export default function AgentWorkspace() {
     if (appMode !== 'agent') return
     if (!conversationsLoaded) return
     
-    if (conversations.length === 0) {
+    const availableConversations = conversations.filter((item) => !item.deletedAt)
+    if (availableConversations.length === 0) {
       createConversation()
     } else if (!conversation) {
-      const latest = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      const latest = [...availableConversations].sort((a, b) => b.updatedAt - a.updatedAt)[0]
       if (latest && latest.messages.length === 0) {
         setActiveConversationId(latest.id)
       } else {
@@ -509,7 +498,7 @@ export default function AgentWorkspace() {
   }, [appMode, conversationsLoaded, conversations, conversation, createConversation, setActiveConversationId])
 
   const sortedConversations = useMemo(
-    () => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt),
+    () => [...conversations].filter((item) => !item.deletedAt).sort((a, b) => b.updatedAt - a.updatedAt),
     [conversations],
   )
 
@@ -567,6 +556,13 @@ export default function AgentWorkspace() {
   }, [activeMessages, activeRounds, updateIsScrolledToBottom])
 
   useEffect(() => {
+    if (appMode !== 'agent') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    setNow(Date.now())
+    return () => window.clearInterval(timer)
+  }, [appMode])
+
+  useEffect(() => {
     if (!scrollTargetRoundId) return
     const id = window.requestAnimationFrame(() => {
       messageRefs.current.get(scrollTargetRoundId)?.scrollIntoView({ block: 'center' })
@@ -588,34 +584,15 @@ export default function AgentWorkspace() {
   }
 
   const handleDeleteConversation = (id: string) => {
-    const targetConversation = conversations.find((item) => item.id === id) ?? null
-    const roundIds = new Set(targetConversation?.rounds.map((round) => round.id) ?? [])
-    const roundTaskIds = targetConversation?.rounds.flatMap((round) => round.outputTaskIds) ?? []
-    const relatedTasks = tasks.filter((task) =>
-      task.agentConversationId === id || Boolean(task.agentRoundId && roundIds.has(task.agentRoundId)),
-    )
-    const existingTaskIds = new Set(tasks.map((task) => task.id))
-    const relatedTaskIds = Array.from(new Set([...roundTaskIds, ...relatedTasks.map((task) => task.id)]))
-      .filter((taskId) => existingTaskIds.has(taskId))
-    const relatedTaskIdSet = new Set(relatedTaskIds)
-    const generatedImageCount = new Set(
-      tasks
-        .filter((task) => relatedTaskIdSet.has(task.id))
-        .flatMap((task) => task.outputImages || []),
-    ).size
-
     setConfirmDialog({
       title: '删除对话',
-      message: '确定要删除这个 Agent 对话吗？',
-      checkbox: generatedImageCount > 0
-        ? {
-            label: `同时删除对话中生成的图片（${generatedImageCount} 张）`,
-            tone: 'danger',
-          }
-        : undefined,
-      action: async (deleteGeneratedImages = false) => {
-        deleteConversation(id)
-        if (deleteGeneratedImages && relatedTaskIds.length > 0) await removeMultipleTasks(relatedTaskIds)
+      message: '这会先在本地标记整个会话记录，避免直接丢数据。你可以选择仅本地标记，或立即同步删除到服务端。',
+      checkbox: {
+        label: '立即同步删除到服务端',
+        tone: 'danger',
+      },
+      action: async (syncToServer = false) => {
+        await markAgentConversationForDeletion(id, syncToServer)
       },
     })
   }
@@ -697,9 +674,15 @@ export default function AgentWorkspace() {
       message: isUserMessage
         ? '确定要删除这轮记录吗？这会删除这条消息和它的输出，后续消息会被保留。'
         : '确定要删除这条消息吗？关联的图片任务不会从画廊中删除。',
-      action: async () => {
+      checkbox: isUserMessage && round.outputTaskIds.length > 0
+        ? {
+            label: '同时同步删除关联记录',
+            tone: 'danger',
+          }
+        : undefined,
+      action: async (syncToServer = false) => {
         if (isUserMessage) {
-          if (round.outputTaskIds.length > 0) await removeMultipleTasks(round.outputTaskIds)
+          if (round.outputTaskIds.length > 0) await removeMultipleTasks(round.outputTaskIds, syncToServer)
 
           useStore.setState((state) => {
             const targetConversationId = conversation?.id
@@ -897,7 +880,10 @@ export default function AgentWorkspace() {
                 ) : (
                   <button type="button" className="min-w-0 flex-1 text-left" onClick={() => handleConversationSelect(item.id)}>
                     <div className={`truncate ${item.id === activeConversationId ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>{item.title}</div>
-                    <div className="text-xs text-gray-400">{formatTime(item.updatedAt)}</div>
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                      <span>{getConversationSyncLabel(item)}</span>
+                      <span>{formatTime(item.updatedAt)}</span>
+                    </div>
                   </button>
                 )}
                 <div className={`flex shrink-0 items-center gap-1 overflow-hidden transition-all duration-150 ${agentEditingConversationId === item.id ? 'w-6 opacity-100' : `group-hover:w-[4.5rem] group-hover:opacity-100 group-focus-within:w-[4.5rem] group-focus-within:opacity-100 ${conversationActionsId === item.id ? 'w-[4.5rem] opacity-100' : 'w-0 opacity-0'}`}`}>
@@ -1094,7 +1080,12 @@ export default function AgentWorkspace() {
                                     onClick={() => setDetailTaskId(block.task.id)}
                                     onReuse={() => handleReuse(block.task)}
                                     onEditOutputs={() => editOutputs(block.task)}
-                                    onDelete={() => setConfirmDialog({ title: '删除记录', message: '确定要删除这条记录吗？', action: () => removeTask(block.task) })}
+                                    onDelete={() => setConfirmDialog({
+                                      title: '删除记录',
+                                      message: '这会先在本地标记删除，避免直接丢数据。你可以选择仅本地标记，或立即同步删除到服务端。',
+                                      checkbox: { label: '立即同步删除到服务端', tone: 'danger' },
+                                      action: (syncToServer = false) => removeTask(block.task, syncToServer),
+                                    })}
                                   />
                                 </div>
                               )
@@ -1242,6 +1233,7 @@ export default function AgentWorkspace() {
                               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:300ms]" />
                             </span>
                           </span>
+                          <span className="font-mono text-xs opacity-80">{String(Math.floor((now - round.createdAt) / 60000)).padStart(2, '0')}:{String(Math.floor((now - round.createdAt) / 1000) % 60).padStart(2, '0')}</span>
                         </div>
                       </article>
                     </div>

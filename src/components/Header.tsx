@@ -29,7 +29,7 @@ export default function Header() {
   const activeAgentConversationId = useStore((s) => s.activeAgentConversationId)
   const setAgentEditingConversationId = useStore((s) => s.setAgentEditingConversationId)
   const setAgentSidebarCollapsed = useStore((s) => s.setAgentSidebarCollapsed)
-  const activeConversation = agentConversations.find((item) => item.id === activeAgentConversationId)
+  const activeConversation = agentConversations.find((item) => item.id === activeAgentConversationId && !item.deletedAt)
   const { hasUpdate, latestRelease, dismiss } = useVersionCheck()
   const [showHelp, setShowHelp] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
