@@ -4,6 +4,8 @@ import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
+import { getImage } from '../lib/db'
+import { resolveRemoteDeletedImageConflict } from '../lib/serverSync'
 
 const MIN_SCALE = 1
 const MAX_SCALE = 10
@@ -28,6 +30,7 @@ export default function Lightbox() {
   const [src, setSrc] = useState('')
   const [maskImageSrc, setMaskImageSrc] = useState('')
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
+  const [hasRemoteDeletedConflict, setHasRemoteDeletedConflict] = useState(false)
 
   const close = useCallback(() => setLightboxImageId(null), [setLightboxImageId])
   useCloseOnEscape(Boolean(lightboxImageId), close)
@@ -58,6 +61,34 @@ export default function Lightbox() {
       cancelled = true
     }
   }, [lightboxImageId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!lightboxImageId) {
+      setHasRemoteDeletedConflict(false)
+      return
+    }
+
+    void getImage(lightboxImageId).then((image) => {
+      if (cancelled) return
+      setHasRemoteDeletedConflict(Boolean(image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number'))
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [lightboxImageId, src])
+
+  const handleResolveRemoteDeletedConflict = useCallback(async (action: 'recover' | 'discard') => {
+    if (!lightboxImageId) return
+    await resolveRemoteDeletedImageConflict(lightboxImageId, action)
+    if (action === 'discard') close()
+    else {
+      const image = await getImage(lightboxImageId)
+      setHasRemoteDeletedConflict(Boolean(image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number'))
+    }
+  }, [close, lightboxImageId])
 
   // 遮罩图加载
   useEffect(() => {
@@ -147,6 +178,8 @@ export default function Lightbox() {
     <LightboxInner
       src={src}
       imageId={lightboxImageId}
+      hasRemoteDeletedConflict={hasRemoteDeletedConflict}
+      onResolveRemoteDeletedConflict={handleResolveRemoteDeletedConflict}
       maskPreviewSrc={maskPreviewSrc}
       onClose={close}
       showNav={showNav}
@@ -161,6 +194,8 @@ export default function Lightbox() {
 interface LightboxInnerProps {
   src: string
   imageId: string
+  hasRemoteDeletedConflict: boolean
+  onResolveRemoteDeletedConflict: (action: 'recover' | 'discard') => void | Promise<void>
   maskPreviewSrc?: string
   onClose: () => void
   showNav: boolean
@@ -171,7 +206,7 @@ interface LightboxInnerProps {
 }
 
 /** 内部组件：保证挂载时 DOM 已经存在，所有 ref / effect 都可靠 */
-function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext }: LightboxInnerProps) {
+function LightboxInner({ src, imageId, hasRemoteDeletedConflict, onResolveRemoteDeletedConflict, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext }: LightboxInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const openedAtRef = useRef(Date.now())
 
@@ -614,6 +649,33 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
       onDoubleClick={onDoubleClick}
     >
       <div className="absolute inset-0 bg-black/70 backdrop-blur-md animate-fade-in" />
+      {hasRemoteDeletedConflict && (
+        <div className="absolute left-1/2 top-6 z-20 w-[min(90vw,32rem)] -translate-x-1/2 rounded-2xl bg-amber-500/92 px-4 py-3 text-center text-sm font-medium text-white shadow-lg">
+          <div>该图片已在服务端删除，当前设备仍保留本地副本，待处理</div>
+          <div className="mt-3 flex justify-center gap-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void onResolveRemoteDeletedConflict('recover')
+              }}
+              className="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/30"
+            >
+              恢复到服务端
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void onResolveRemoteDeletedConflict('discard')
+              }}
+              className="rounded-lg bg-black/20 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-black/30"
+            >
+              接受删除
+            </button>
+          </div>
+        </div>
+      )}
       <div className="relative animate-zoom-in">
         <div
           className="relative flex items-center justify-center"

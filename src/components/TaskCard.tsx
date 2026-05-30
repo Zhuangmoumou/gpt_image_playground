@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
 import { pullSpecificThumbnailsToLocal } from '../lib/serverSync'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
+import { getImage } from '../lib/db'
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
@@ -76,6 +77,7 @@ export default function TaskCard({
   const [swipeActionActive, setSwipeActionActive] = useState(false)
   const [swipeDirection, setSwipeDirection] = useState<-1 | 0 | 1>(0)
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
+  const [hasRemoteDeletedImageConflict, setHasRemoteDeletedImageConflict] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
   const settings = useStore((s) => s.settings)
   const streamPreviewSrc = useStore((s) => s.streamPreviews[task.id] || '')
@@ -237,6 +239,24 @@ export default function TaskCard({
     setStreamPreviewLoaded(false)
   }, [streamPreviewSrc, task.id])
 
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      for (const imageId of task.outputImages) {
+        const image = await getImage(imageId)
+        if (cancelled) return
+        if (image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number') {
+          setHasRemoteDeletedImageConflict(true)
+          return
+        }
+      }
+      if (!cancelled) setHasRemoteDeletedImageConflict(false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [task.outputImages])
+
   // 定时更新运行中任务的计时
   useEffect(() => {
     if (task.status !== 'running' && !(task.status === 'error' && (task.falRecoverable || task.customRecoverable))) return
@@ -330,6 +350,8 @@ export default function TaskCard({
     ? '待确认删除'
     : task.syncState === 'pending_delete_push'
     ? '待同步删除'
+    : hasRemoteDeletedImageConflict
+    ? '图片待处理'
     : task.syncState === 'pending_push'
     ? '待同步'
     : task.syncState === 'conflict'

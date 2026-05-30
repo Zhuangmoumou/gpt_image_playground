@@ -3,6 +3,8 @@ import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, 
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
+import { getImage } from '../lib/db'
+import { resolveRemoteDeletedImageConflict } from '../lib/serverSync'
 import { formatImageRatio } from '../lib/size'
 import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
@@ -32,6 +34,7 @@ export default function DetailModal() {
   const [outputPreviewSrcs, setOutputPreviewSrcs] = useState<Record<string, string>>({})
   const [imageRatios, setImageRatios] = useState<Record<string, string>>({})
   const [imageSizes, setImageSizes] = useState<Record<string, string>>({})
+  const [remoteDeletedConflictImageIds, setRemoteDeletedConflictImageIds] = useState<Record<string, true>>({})
   const [maskPreviewSrc, setMaskPreviewSrc] = useState('')
   const [now, setNow] = useState(Date.now())
   const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
@@ -195,6 +198,36 @@ export default function DetailModal() {
     }
   }, [maskTargetSrc, maskSrc])
 
+  useEffect(() => {
+    if (!task) {
+      setRemoteDeletedConflictImageIds({})
+      return
+    }
+
+    let cancelled = false
+    const ids = [...new Set([
+      ...(task.inputImageIds ?? []),
+      ...(task.outputImages ?? []),
+      ...(task.maskImageId ? [task.maskImageId] : []),
+      ...(task.maskTargetImageId ? [task.maskTargetImageId] : []),
+    ])]
+
+    void (async () => {
+      const next: Record<string, true> = {}
+      for (const id of ids) {
+        const image = await getImage(id)
+        if (image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number') {
+          next[id] = true
+        }
+      }
+      if (!cancelled) setRemoteDeletedConflictImageIds(next)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [task])
+
   if (!task) return null
 
   const isAgentTask = task.sourceMode === 'agent' || Boolean(task.agentConversationId || task.agentRoundId)
@@ -203,6 +236,7 @@ export default function DetailModal() {
   const showReferenceSection = allInputImageIds.length > 0 || isAgentEditTool
 
   const outputLen = task.outputImages?.length || 0
+  const currentOutputHasRemoteDeletedConflict = Boolean(currentOutputImageId && remoteDeletedConflictImageIds[currentOutputImageId])
   const currentImageRatio = currentOutputImageId ? imageRatios[currentOutputImageId] : ''
   const currentImageSize = currentOutputImageId ? imageSizes[currentOutputImageId] : ''
   const currentActualParams = currentOutputImageId ? task.actualParamsByImage?.[currentOutputImageId] : undefined
@@ -270,6 +304,25 @@ export default function DetailModal() {
         tone: 'danger',
       },
       action: (syncToServer = false) => removeTask(task, syncToServer),
+    })
+  }
+
+  const handleResolveRemoteDeletedConflict = async (action: 'recover' | 'discard') => {
+    if (!currentOutputImageId) return
+    await resolveRemoteDeletedImageConflict(currentOutputImageId, action)
+    if (action === 'discard') {
+      setOutputPreviewSrcs((prev) => {
+        const next = { ...prev }
+        delete next[currentOutputImageId]
+        return next
+      })
+    }
+    const image = await getImage(currentOutputImageId)
+    setRemoteDeletedConflictImageIds((prev) => {
+      const next = { ...prev }
+      if (image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number') next[currentOutputImageId] = true
+      else delete next[currentOutputImageId]
+      return next
     })
   }
 
@@ -486,6 +539,33 @@ export default function DetailModal() {
                   )
                 )}
               </div>
+              {currentOutputHasRemoteDeletedConflict && (
+                <div className="absolute bottom-4 left-4 right-4 rounded-2xl bg-amber-500/90 px-3 py-2 text-center text-xs font-medium text-white shadow-lg">
+                  <div>该图片已在服务端删除，当前设备仍保留本地副本，待处理</div>
+                  <div className="mt-2 flex justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleResolveRemoteDeletedConflict('recover')
+                      }}
+                      className="rounded-lg bg-white/20 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-white/30"
+                    >
+                      恢复到服务端
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleResolveRemoteDeletedConflict('discard')
+                      }}
+                      className="rounded-lg bg-black/20 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-black/30"
+                    >
+                      接受删除
+                    </button>
+                  </div>
+                </div>
+              )}
               {outputLen > 1 && (
                 <>
                   <button
@@ -808,6 +888,11 @@ export default function DetailModal() {
                                   className="w-full h-full object-cover"
                                   alt=""
                                 />
+                              )}
+                              {remoteDeletedConflictImageIds[imgId] && (
+                                <span className="absolute bottom-1 right-1 rounded bg-amber-500/90 px-1 py-0.5 text-[8px] font-bold leading-none tracking-wider text-white z-10 pointer-events-none">
+                                  远端已删
+                                </span>
                               )}
                               {isMaskTarget && (
                                 <span className="absolute left-1 top-1 rounded bg-blue-500/90 px-1.5 py-0.5 text-[8px] leading-none text-white font-bold tracking-wider backdrop-blur-sm z-10 pointer-events-none">

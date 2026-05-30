@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { useStore, addImageFromUrl, ensureImageCached } from '../store'
+import { getImage } from '../lib/db'
+import { resolveRemoteDeletedImageConflict } from '../lib/serverSync'
 import { copyImageSourceToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageIds, formatExportFileTime } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
@@ -7,6 +9,7 @@ import { CopyIcon, DownloadIcon, EditIcon } from './icons'
 
 export default function ImageContextMenu() {
   const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; outputImageIds: string[]; x: number; y: number } | null>(null)
+  const [hasRemoteDeletedConflict, setHasRemoteDeletedConflict] = useState(false)
   const showToast = useStore((s) => s.showToast)
   const inputImages = useStore((s) => s.inputImages)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
@@ -73,6 +76,23 @@ export default function ImageContextMenu() {
       window.removeEventListener('resize', close)
     }
   }, [menuInfo])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!menuInfo?.imageId) {
+      setHasRemoteDeletedConflict(false)
+      return
+    }
+
+    void getImage(menuInfo.imageId).then((image) => {
+      if (cancelled) return
+      setHasRemoteDeletedConflict(Boolean(image?.syncState === 'conflict' && typeof image.remoteDeletedAt === 'number'))
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [menuInfo?.imageId])
 
   if (!menuInfo) return null
 
@@ -181,12 +201,25 @@ export default function ImageContextMenu() {
     }
   }
 
+  const handleResolveConflict = async (e: React.MouseEvent, action: 'recover' | 'discard') => {
+    e.stopPropagation()
+    const imageId = menuInfo.imageId
+    setMenuInfo(null)
+    if (!imageId) return
+    try {
+      await resolveRemoteDeletedImageConflict(imageId, action)
+    } catch (err) {
+      console.error(err)
+      showToast(action === 'recover' ? '恢复图片失败' : '接受删除失败', 'error')
+    }
+  }
+
   // 保证菜单在视口内
   let left = menuInfo.x
   let top = menuInfo.y
   const MENU_WIDTH = 120
   const showDownloadAll = menuInfo.outputImageIds.length > 1
-  const MENU_HEIGHT = showDownloadAll ? 160 : 128
+  const MENU_HEIGHT = (showDownloadAll ? 160 : 128) + (hasRemoteDeletedConflict ? 64 : 0)
 
   if (left + MENU_WIDTH > window.innerWidth) {
     left -= MENU_WIDTH
@@ -224,6 +257,24 @@ export default function ImageContextMenu() {
           <DownloadIcon className="w-4 h-4 flex-shrink-0" />
           下载全部
         </button>
+      )}
+      {hasRemoteDeletedConflict && (
+        <>
+          <button
+            onClick={(e) => void handleResolveConflict(e, 'recover')}
+            className="w-full px-4 py-2 text-left text-sm text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-500/10 flex items-center gap-2 transition-colors"
+          >
+            <EditIcon className="w-4 h-4 flex-shrink-0" />
+            恢复到服务端
+          </button>
+          <button
+            onClick={(e) => void handleResolveConflict(e, 'discard')}
+            className="w-full px-4 py-2 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 flex items-center gap-2 transition-colors"
+          >
+            <EditIcon className="w-4 h-4 flex-shrink-0" />
+            接受删除
+          </button>
+        </>
       )}
       <button
         onClick={handleEdit}

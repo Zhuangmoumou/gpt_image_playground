@@ -7,6 +7,7 @@ import {
   deleteImage,
   deleteTask,
   getAllImageThumbnails,
+  getAllImages,
   getAllAgentConversations,
   getImage,
   getStoredImageThumbnail,
@@ -32,6 +33,12 @@ interface ServerManifestItem {
   updatedAt: number
   deletedAt?: number
   thumbnailVersion?: number
+}
+
+interface RemoteDeletedImage {
+  id: string
+  deletedAt: number
+  updatedAt: number
 }
 
 interface ServerManifest {
@@ -296,14 +303,21 @@ async function collectLocalSyncState(): Promise<LocalSyncState> {
   const storedAgentConversations = await getAllAgentConversations()
   const agentConversations = mergeAgentConversationsForSync(state.agentConversations, storedAgentConversations)
   const imageIds = collectReferencedImageIds(tasks.filter((task) => !task.deletedAt), agentConversations.filter((conversation) => !conversation.deletedAt))
+  const allStoredImages = (await getAllImages()).map((image) => ({ ...image, updatedAt: getImageUpdatedAt(image) }))
   const allStoredThumbnails = (await getAllImageThumbnails()).map((thumbnail) => ({ ...thumbnail, updatedAt: getThumbnailUpdatedAt(thumbnail) }))
   const thumbnailIds = new Set<string>(allStoredThumbnails.map((thumbnail) => thumbnail.id))
-  const images: StoredImage[] = []
+  const imageIdSet = new Set<string>(allStoredImages.map((image) => image.id))
+  const images: StoredImage[] = [...allStoredImages]
   const thumbnails: StoredImageThumbnail[] = [...allStoredThumbnails]
 
   for (const id of imageIds) {
-    const image = await getImage(id)
-    if (image) images.push({ ...image, updatedAt: getImageUpdatedAt(image) })
+    if (!imageIdSet.has(id)) {
+      const image = await getImage(id)
+      if (image) {
+        images.push({ ...image, updatedAt: getImageUpdatedAt(image) })
+        imageIdSet.add(id)
+      }
+    }
     if (thumbnailIds.has(id)) continue
     const thumbnail = await getStoredImageThumbnail(id)
     if (!thumbnail) continue
@@ -416,8 +430,13 @@ function getSyncChanges(local: LocalSyncState, manifest: ServerManifest) {
     .filter((task) => task.deletedAt && getEntityVersion(task.updatedAt, task.deletedAt) > getEntityVersion(local.taskUpdatedAt.get(task.id) ?? 0, local.tasks.find((item) => item.id === task.id)?.deletedAt))
     .map((task) => task.id)
   const deleteImageIds = manifest.images
-    .filter((image) => image.deletedAt && getEntityVersion(image.updatedAt, image.deletedAt) > getEntityVersion(local.imageUpdatedAt.get(image.id) ?? 0, local.imageDeletedAt.get(image.id)))
-    .map((image) => image.id)
+    .filter((image): image is ServerManifestItem & { deletedAt: number } => typeof image.deletedAt === 'number')
+    .filter((image) => {
+      const localImage = local.images.find((item) => item.id === image.id)
+      if (localImage?.syncState === 'conflict' && localImage.remoteDeletedAt === image.deletedAt) return false
+      return getEntityVersion(image.updatedAt, image.deletedAt) > getEntityVersion(local.imageUpdatedAt.get(image.id) ?? 0, local.imageDeletedAt.get(image.id))
+    })
+    .map((image) => ({ id: image.id, deletedAt: image.deletedAt, updatedAt: image.updatedAt }))
   const deleteAgentConversationIds = manifest.agentConversations
     .filter((conversation) => conversation.deletedAt && getEntityVersion(conversation.updatedAt, conversation.deletedAt) > getEntityVersion(local.conversationUpdatedAt.get(conversation.id) ?? 0, local.agentConversations.find((item) => item.id === conversation.id)?.deletedAt))
     .map((conversation) => conversation.id)
@@ -451,14 +470,67 @@ function getSyncChanges(local: LocalSyncState, manifest: ServerManifest) {
 
 async function applyManifestDeletions(changes: ReturnType<typeof getSyncChanges>) {
   const deletionTasks = new Set(changes.deletions.tasks)
-  const deletionImages = new Set(changes.deletions.images)
+  const deletionImages = changes.deletions.images
   const deletionConversations = new Set(changes.deletions.agentConversations)
-  if (!deletionTasks.size && !deletionImages.size && !deletionConversations.size) return
+  if (!deletionTasks.size && deletionImages.length === 0 && !deletionConversations.size) return
+
+  const conflictedImages: RemoteDeletedImage[] = []
+
+  const showRemoteImageDeletionConflictDialogs = (items: RemoteDeletedImage[], index = 0) => {
+    const item = items[index]
+    if (!item) return
+    const relatedTaskCount = useStore.getState().tasks.filter((task) =>
+      task.inputImageIds.includes(item.id) ||
+      task.outputImages.includes(item.id) ||
+      task.streamPartialImageIds?.includes(item.id) ||
+      task.maskTargetImageId === item.id ||
+      task.maskImageId === item.id,
+    ).length
+    useStore.getState().setConfirmDialog({
+      title: '服务端已删除图片',
+      message: relatedTaskCount > 0
+        ? `图片「${item.id.slice(0, 8)}」已在服务端删除，但当前浏览器仍保留本地副本，并被 ${relatedTaskCount} 条记录引用。你要恢复到服务端，还是接受删除并清理本地？`
+        : `图片「${item.id.slice(0, 8)}」已在服务端删除，但当前浏览器仍保留本地副本。你要恢复到服务端，还是接受删除并清理本地？`,
+      showCancel: false,
+      buttons: [
+        {
+          label: '恢复到服务端',
+          tone: 'primary',
+          action: () => {
+            void resolveRemoteDeletedImageConflict(item.id, 'recover').finally(() => {
+              showRemoteImageDeletionConflictDialogs(items, index + 1)
+            })
+          },
+        },
+        {
+          label: '接受删除',
+          tone: 'danger',
+          action: () => {
+            void resolveRemoteDeletedImageConflict(item.id, 'discard').finally(() => {
+              showRemoteImageDeletionConflictDialogs(items, index + 1)
+            })
+          },
+        },
+      ],
+    })
+  }
 
   beginRemoteApply()
   try {
     for (const id of deletionTasks) await deleteTask(id)
-    for (const id of deletionImages) await deleteImage(id)
+    for (const image of deletionImages) {
+      const localImage = await getImage(image.id)
+      if (!localImage?.dataUrl) {
+        await deleteImage(image.id)
+        continue
+      }
+      await putImage({
+        ...localImage,
+        syncState: 'conflict',
+        remoteDeletedAt: image.deletedAt,
+      })
+      conflictedImages.push(image)
+    }
     for (const id of deletionConversations) await deleteAgentConversation(id)
 
     useStore.setState((state) => ({
@@ -471,6 +543,43 @@ async function applyManifestDeletions(changes: ReturnType<typeof getSyncChanges>
   } finally {
     endRemoteApply()
   }
+
+  if (conflictedImages.length > 0) {
+    showRemoteImageDeletionConflictDialogs(conflictedImages)
+  }
+}
+
+export async function resolveRemoteDeletedImageConflict(imageId: string, action: 'recover' | 'discard') {
+  if (action === 'discard') {
+    await deleteImage(imageId)
+    useStore.getState().showToast('已接受服务端删除，本地图片已清理', 'success')
+    return
+  }
+
+  const image = await getImage(imageId)
+  if (!image?.dataUrl) return
+
+  const now = Date.now()
+  await putImage({
+    ...image,
+    updatedAt: now,
+    deletedAt: null,
+    remoteDeletedAt: null,
+    syncState: 'pending_push',
+  })
+
+  const thumbnail = await getStoredImageThumbnail(imageId)
+  if (thumbnail?.thumbnailDataUrl) {
+    await putImageThumbnail({
+      ...thumbnail,
+      updatedAt: now,
+      deletedAt: null,
+      syncState: 'pending_push',
+    })
+  }
+
+  scheduleAutoSync('recover-remote-deleted-image')
+  useStore.getState().showToast('已恢复图片，并将在下次同步时推回服务端', 'success')
 }
 
 async function applyPartialSnapshot(snapshot: ServerSnapshot) {

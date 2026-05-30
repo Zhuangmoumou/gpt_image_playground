@@ -285,6 +285,8 @@ export interface StoredImage {
   deletedAt?: number | null
   /** 当前同步状态 */
   syncState?: SyncState
+  /** 记录服务端删除时间，用于跨设备删除冲突确认 */
+  remoteDeletedAt?: number | null
   /** 图片来源：用户上传 / API 生成 / 遮罩 */
   source?: 'upload' | 'generated' | 'mask'
   /** 原图宽度 */
