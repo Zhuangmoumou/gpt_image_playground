@@ -3,6 +3,8 @@ import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { bootstrapServerData, flushAutoSync, pullServerDataToLocal, scheduleAutoSync } from './lib/serverSync'
+import { mergeImportedSettings } from './lib/apiProfiles'
+import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
@@ -18,6 +20,8 @@ import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
+
+let customProviderConfigUrlImportStarted = false
 
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
@@ -47,6 +51,20 @@ export default function App() {
     }
 
     void (async () => {
+      const customProviderConfigUrl = getCustomProviderConfigUrl()
+      if (customProviderConfigUrl && !customProviderConfigUrlImportStarted) {
+        customProviderConfigUrlImportStarted = true
+        void loadCustomProviderSettingsFromUrl(customProviderConfigUrl)
+          .then((importedSettings) => {
+            if (!importedSettings) return
+            const state = useStore.getState()
+            state.setSettings(mergeImportedSettings(state.settings, importedSettings))
+          })
+          .catch((error) => {
+            console.warn('Failed to import custom provider config URL:', error)
+          })
+      }
+
       await initStore()
       try {
         await bootstrapServerData()
