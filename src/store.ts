@@ -12,6 +12,7 @@ import type {
   InputImage,
   MaskDraft,
   TaskRecord,
+  StoredImage,
   ExportData,
   ResponsesApiResponse,
   ResponsesOutputItem,
@@ -36,11 +37,13 @@ import {
   getAllImages,
   putImage,
   putImageThumbnail,
+  deleteStoredOriginalImage,
   deleteImage,
   clearImages,
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
+import { serverApi } from './lib/serverApi'
 import { getGenerationJob, submitGenerationJob, type AgentGenerationJobResult, type ImageGenerationJobResult } from './lib/serverGenerationJobs'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, createAgentResponsesBody, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
@@ -80,6 +83,8 @@ const OPENAI_INTERRUPTED_ERROR = '请求中断'
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28
 const ERROR_TOAST_MAX_LENGTH = 80
+const LOCAL_SETTINGS_UPDATED_AT_KEY = 'gpt-image-playground.settings-updated-at'
+const HEADER_VALUE_EMPTY = ''
 type ToastType = 'info' | 'success' | 'error'
 type AgentInputDraft = {
   prompt: string
@@ -106,6 +111,11 @@ export function getErrorToastMessage(message: string): string {
 
 function getToastMessage(message: string, type: ToastType): string {
   return type === 'error' ? getErrorToastMessage(message) : message
+}
+
+function writeLocalSettingsUpdatedAtForSync(updatedAt: number) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(LOCAL_SETTINGS_UPDATED_AT_KEY, String(updatedAt))
 }
 
 function isErrorToastTitle(title: string): boolean {
@@ -182,6 +192,42 @@ export async function ensureImageCached(id: string): Promise<string | undefined>
   if (rec) {
     cacheImage(id, rec.dataUrl)
     return rec.dataUrl
+  }
+  try {
+    const response = await fetch(`/api/sync/images/${encodeURIComponent(id)}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    if (!response.ok) return undefined
+
+    const mimeType = response.headers.get('Content-Type') || 'image/png'
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    }
+    const dataUrl = `data:${mimeType};base64,${btoa(binary)}`
+    const parseHeaderNumber = (value: string | null) => {
+      if (value == null || value === HEADER_VALUE_EMPTY) return undefined
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+    const pulled: StoredImage = {
+      id,
+      dataUrl,
+      width: parseHeaderNumber(response.headers.get('X-Image-Width')),
+      height: parseHeaderNumber(response.headers.get('X-Image-Height')),
+      source: (response.headers.get('X-Image-Source') as StoredImage['source'] | null) ?? undefined,
+      createdAt: parseHeaderNumber(response.headers.get('X-Image-Created-At')),
+      updatedAt: parseHeaderNumber(response.headers.get('X-Image-Updated-At')),
+      deletedAt: null,
+      syncState: 'synced',
+    }
+    await putImage(pulled)
+    cacheImage(id, dataUrl)
+    return dataUrl
+  } catch {
+    // 远端按需拉取失败时，保留本地占位行为。
   }
   return undefined
 }
@@ -575,6 +621,7 @@ function createAgentConversation(now = Date.now()): AgentConversation {
     activeRoundId: null,
     createdAt: now,
     updatedAt: now,
+    syncState: 'pending_push',
     rounds: [],
     messages: [],
   }
@@ -788,6 +835,8 @@ interface AppState {
   clearSelection: () => void
 
   // UI
+  recordSyncStatusText: string | null
+  setRecordSyncStatusText: (text: string | null) => void
   detailTaskId: string | null
   setDetailTaskId: (id: string | null) => void
   lightboxImageId: string | null
@@ -1118,7 +1167,9 @@ export const useStore = create<AppState>()(
 
       // Settings
       settings: { ...DEFAULT_SETTINGS },
-      setSettings: (s) => set((st) => {
+      setSettings: (s) => {
+        writeLocalSettingsUpdatedAtForSync(Date.now())
+        set((st) => {
         const previous = normalizeSettings(st.settings)
         const incoming = s as Partial<AppSettings>
         const hasLegacyOverrides =
@@ -1158,7 +1209,8 @@ export const useStore = create<AppState>()(
             ? { reusedTaskApiProfileId: null, reusedTaskApiProfileName: null, reusedTaskApiProfileMissing: false }
             : {}),
         }
-      }),
+        })
+      },
       dismissedCodexCliPrompts: [],
       dismissCodexCliPrompt: (key) => set((st) => ({
         dismissedCodexCliPrompts: st.dismissedCodexCliPrompts.includes(key)
@@ -1344,18 +1396,20 @@ export const useStore = create<AppState>()(
       }),
       setActiveAgentRoundId: (conversationId, roundId) => set((state) => ({
         agentConversations: state.agentConversations.map((conversation) =>
-          conversation.id === conversationId ? { ...conversation, activeRoundId: roundId, updatedAt: Date.now() } : conversation,
+          conversation.id === conversationId ? { ...conversation, activeRoundId: roundId, updatedAt: Date.now(), syncState: 'pending_push' } : conversation,
         ),
       })),
-      renameAgentConversation: (id, title) => set((state) => ({ agentConversations: state.agentConversations.map((c) => (c.id === id ? { ...c, title, updatedAt: Date.now() } : c)) })),
+      renameAgentConversation: (id, title) => set((state) => ({ agentConversations: state.agentConversations.map((c) => (c.id === id ? { ...c, title, updatedAt: Date.now(), syncState: 'pending_push' } : c)) })),
       deleteAgentConversation: (id) => set((state) => {
-        const agentInputDrafts = { ...state.agentInputDrafts }
-        delete agentInputDrafts[id]
+        const now = Date.now()
         const activeDeleted = state.activeAgentConversationId === id
         return {
-          agentConversations: state.agentConversations.filter((c) => c.id !== id),
+          agentConversations: state.agentConversations.map((conversation) =>
+            conversation.id === id
+              ? { ...conversation, deletedAt: now, updatedAt: now, syncState: 'pending_delete_confirm' }
+              : conversation,
+          ),
           activeAgentConversationId: activeDeleted ? null : state.activeAgentConversationId,
-          agentInputDrafts,
           ...(activeDeleted ? clearInputDraftState() : {}),
         }
       }),
@@ -1424,6 +1478,8 @@ export const useStore = create<AppState>()(
       clearSelection: () => set({ selectedTaskIds: [] }),
 
       // UI
+      recordSyncStatusText: null,
+      setRecordSyncStatusText: (recordSyncStatusText) => set({ recordSyncStatusText }),
       detailTaskId: null,
       setDetailTaskId: (detailTaskId) => {
         if (detailTaskId) dismissAllTooltips()
@@ -2190,6 +2246,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   const taskId = genId()
+  const taskCreatedAt = Date.now()
   const task: TaskRecord = {
     id: taskId,
     prompt: prompt.trim(),
@@ -2205,7 +2262,9 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     outputImages: [],
     status: 'running',
     error: null,
-    createdAt: Date.now(),
+    createdAt: taskCreatedAt,
+    updatedAt: taskCreatedAt,
+    syncState: 'pending_push',
     finishedAt: null,
     elapsed: null,
   }
@@ -2236,9 +2295,15 @@ function getActiveAgentConversation(): AgentConversation {
 
 function updateAgentConversation(conversationId: string, updater: (conversation: AgentConversation) => AgentConversation) {
   useStore.setState((state) => ({
-    agentConversations: state.agentConversations.map((conversation) =>
-      conversation.id === conversationId ? updater(conversation) : conversation,
-    ),
+    agentConversations: state.agentConversations.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation
+      const nextConversation = updater(conversation)
+      if (nextConversation === conversation) return conversation
+      return {
+        ...nextConversation,
+        syncState: nextConversation.syncState ?? 'pending_push',
+      }
+    }),
   }))
 }
 
@@ -2795,6 +2860,36 @@ async function scrubAgentOutputPayloadsForDeletedTasks(deletedTasks: TaskRecord[
   return scrubbedTasks
 }
 
+async function markTasksDeleted(taskIds: string[], syncToServer: boolean) {
+  if (taskIds.length === 0) return
+
+  const { tasks, setTasks } = useStore.getState()
+  const toDelete = new Set(taskIds)
+  const deletedTasks = tasks.filter((task) => toDelete.has(task.id))
+  if (deletedTasks.length === 0) return
+
+  const now = Date.now()
+  const nextSyncState: TaskRecord['syncState'] = syncToServer ? 'pending_delete_push' : 'pending_delete_confirm'
+  let nextTasks = tasks.map((task) =>
+    toDelete.has(task.id)
+      ? {
+          ...task,
+          deletedAt: now,
+          updatedAt: now,
+          syncState: nextSyncState,
+        }
+      : task,
+  )
+
+  const remainingTasks = nextTasks.filter((task) => !toDelete.has(task.id))
+  const scrubbedRemainingTasks = await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks, remainingTasks)
+  const scrubbedTaskMap = new Map(scrubbedRemainingTasks.map((task) => [task.id, task] as const))
+  nextTasks = nextTasks.map((task) => scrubbedTaskMap.get(task.id) ?? task)
+
+  setTasks(nextTasks)
+  await Promise.all(nextTasks.filter((task) => toDelete.has(task.id)).map((task) => putTask(task)))
+}
+
 function sanitizeResponseOutputForInput(output: ResponsesOutputItem[], options: { allowPendingFunctionCalls?: boolean } = {}) {
   const items = output
     .map(sanitizeResponseOutputItemForInput)
@@ -3202,6 +3297,7 @@ async function completeServerAgentJob(conversationId: string, roundId: string, j
       ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
       n: 1,
     }
+    const finishedAt = Date.now()
     const task: TaskRecord = {
       id: genId(),
       prompt: image.revisedPrompt ?? latestRound.prompt,
@@ -3222,8 +3318,10 @@ async function completeServerAgentJob(conversationId: string, roundId: string, j
       status: 'done',
       error: null,
       createdAt: startedAt,
-      finishedAt: Date.now(),
-      elapsed: Date.now() - startedAt,
+      updatedAt: finishedAt,
+      syncState: 'pending_push',
+      finishedAt,
+      elapsed: finishedAt - startedAt,
       sourceMode: 'agent',
       agentConversationId: conversationId,
       agentRoundId: roundId,
@@ -3317,7 +3415,7 @@ async function startServerAgentJob(conversationId: string, roundId: string, para
     stream: false,
     includeAppFunctionTools: false,
   })
-  const response = await submitGenerationJob('responses', { body }, { conversationId, roundId })
+  const response = await submitGenerationJob('responses', { settings: requestSettings, body }, { conversationId, roundId })
   updateAgentConversation(conversationId, (current) => ({
     ...current,
     updatedAt: Date.now(),
@@ -3412,6 +3510,7 @@ async function executeAgentRound(
         return existingTask.id
       }
 
+      const taskCreatedAt = options.createdAt ?? Date.now()
       const task: TaskRecord = {
         id: genId(),
         prompt: taskPrompt,
@@ -3427,7 +3526,9 @@ async function executeAgentRound(
         outputImages: [],
         status: 'running',
         error: null,
-        createdAt: options.createdAt ?? Date.now(),
+        createdAt: taskCreatedAt,
+        updatedAt: taskCreatedAt,
+        syncState: 'pending_push',
         finishedAt: null,
         elapsed: null,
         sourceMode: 'agent',
@@ -3739,6 +3840,7 @@ async function executeAgentRound(
           ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
           n: 1,
         }
+        const finishedAt = Date.now()
         const task: TaskRecord = {
           id: genId(),
           prompt: image.revisedPrompt ?? round?.prompt ?? userMessage.content,
@@ -3759,8 +3861,10 @@ async function executeAgentRound(
           status: 'done',
           error: null,
           createdAt: startedAt,
-          finishedAt: Date.now(),
-          elapsed: Date.now() - startedAt,
+          updatedAt: finishedAt,
+          syncState: 'pending_push',
+          finishedAt,
+          elapsed: finishedAt - startedAt,
           sourceMode: 'agent',
           agentConversationId: conversationId,
           agentRoundId: roundId,
@@ -3967,7 +4071,7 @@ function clearServerJobPollTimer(key: string) {
 }
 
 function canUseServerBackgroundImages(settings: AppSettings, profile: ApiProfile) {
-  return Boolean(settings.serverRequestMode && settings.serverBackgroundMode && profile.provider !== 'fal' && profile.apiMode === 'images')
+  return Boolean(settings.serverRequestMode && settings.serverBackgroundMode && profile.provider !== 'fal')
 }
 
 async function completeServerImageJob(taskId: string, result: ImageGenerationJobResult) {
@@ -4276,7 +4380,7 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   const { tasks, setTasks } = useStore.getState()
   const updatedAt = patch.updatedAt ?? Date.now()
   const updated = tasks.map((t) =>
-    t.id === taskId ? { ...t, ...patch, updatedAt } : t,
+    t.id === taskId ? { ...t, ...patch, updatedAt, syncState: patch.syncState ?? 'pending_push' } : t,
   )
   setTasks(updated)
   maybeOpenSupportPrompt(tasks, updated, taskId)
@@ -4290,6 +4394,7 @@ export async function retryTask(task: TaskRecord) {
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
   const taskId = genId()
+  const taskCreatedAt = Date.now()
   const newTask: TaskRecord = {
     id: taskId,
     prompt: task.prompt,
@@ -4305,7 +4410,9 @@ export async function retryTask(task: TaskRecord) {
     outputImages: [],
     status: 'running',
     error: null,
-    createdAt: Date.now(),
+    createdAt: taskCreatedAt,
+    updatedAt: taskCreatedAt,
+    syncState: 'pending_push',
     finishedAt: null,
     elapsed: null,
   }
@@ -4399,92 +4506,65 @@ export async function editOutputs(task: TaskRecord) {
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
 }
 
+export async function markAgentConversationForDeletion(conversationId: string, syncToServer = false) {
+  const { agentConversations, tasks } = useStore.getState()
+  const conversation = agentConversations.find((item) => item.id === conversationId)
+  if (!conversation) return
+
+  const now = Date.now()
+  const roundIds = new Set(conversation.rounds.map((round) => round.id))
+  const nextSyncState: TaskRecord['syncState'] = syncToServer ? 'pending_delete_push' : 'pending_delete_confirm'
+
+  useStore.setState((state) => ({
+    agentConversations: state.agentConversations.map((item) =>
+      item.id === conversationId
+        ? { ...item, deletedAt: now, updatedAt: now, syncState: nextSyncState }
+        : item,
+    ),
+    activeAgentConversationId: state.activeAgentConversationId === conversationId ? null : state.activeAgentConversationId,
+    ...(state.activeAgentConversationId === conversationId ? clearInputDraftState() : {}),
+    tasks: state.tasks.map((task) =>
+      task.agentConversationId === conversationId || Boolean(task.agentRoundId && roundIds.has(task.agentRoundId))
+        ? { ...task, deletedAt: now, updatedAt: now, syncState: nextSyncState }
+        : task,
+    ),
+  }))
+
+  await Promise.all(tasks
+    .filter((task) => task.agentConversationId === conversationId || Boolean(task.agentRoundId && roundIds.has(task.agentRoundId)))
+    .map((task) => putTask({ ...task, deletedAt: now, updatedAt: now, syncState: nextSyncState })))
+}
+
 /** 删除多条任务 */
-export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast, clearSelection, selectedTaskIds } = useStore.getState()
-  
+export async function removeMultipleTasks(taskIds: string[], syncToServer = false) {
+  const { tasks, setTasks, showToast, selectedTaskIds } = useStore.getState()
+
   if (!taskIds.length) return
 
   const toDelete = new Set(taskIds)
-  const deletedTasks = tasks.filter(t => toDelete.has(t.id))
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks, tasks.filter(t => !toDelete.has(t.id)))
+  await markTasksDeleted(taskIds, syncToServer)
 
-  // 收集所有被删除任务的关联图片
-  const deletedImageIds = new Set<string>()
-  for (const t of tasks) {
-    if (toDelete.has(t.id)) {
-      addTaskReferencedImageIds(deletedImageIds, t)
-    }
-  }
-
-  setTasks(remaining)
-  for (const id of taskIds) {
-    await dbDeleteTask(id)
-  }
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of deletedImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
-  }
-
-  // 如果删除的任务在选中列表中，则移除
-  const newSelection = selectedTaskIds.filter(id => !toDelete.has(id))
+  const newSelection = selectedTaskIds.filter((id) => !toDelete.has(id))
   if (newSelection.length !== selectedTaskIds.length) {
     useStore.getState().setSelectedTaskIds(newSelection)
   }
 
-  showToast(`已删除 ${taskIds.length} 条记录`, 'success')
+  showToast(syncToServer ? `已标记 ${taskIds.length} 条记录，并将同步删除` : `已标记 ${taskIds.length} 条记录，可稍后决定是否同步删除`, 'success')
 }
 
 /** 删除单条任务 */
-export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast } = useStore.getState()
+export async function removeTask(task: TaskRecord, syncToServer = false) {
+  const { showToast } = useStore.getState()
+  await markTasksDeleted([task.id], syncToServer)
+  showToast(syncToServer ? '记录已标记，并将同步删除' : '记录已标记，可稍后决定是否同步删除', 'success')
+}
 
-  // 收集此任务关联的图片
-  const taskImageIds = new Set([
-    ...(task.inputImageIds || []),
-    ...(task.maskImageId ? [task.maskImageId] : []),
-    ...(task.outputImages || []),
-    ...(task.streamPartialImageIds || []),
-  ])
-
-  // 从列表移除
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks([task], tasks.filter((t) => t.id !== task.id))
-  setTasks(remaining)
-  await dbDeleteTask(task.id)
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of taskImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      imageCache.delete(imgId)
-      thumbnailCache.delete(imgId)
-    }
-  }
-
-  showToast('记录已删除', 'success')
+export async function clearOriginalImageCache() {
+  const images = await getAllImages()
+  const removable = images.filter((image) => image.syncState === 'synced' && !image.deletedAt)
+  await Promise.all(removable.map((image) => deleteStoredOriginalImage(image.id)))
+  imageCache.clear()
+  useStore.getState().showToast(removable.length > 0 ? `已清除 ${removable.length} 张原图缓存` : '没有可清除的原图缓存', 'success')
 }
 
 /** 清空数据选项 */

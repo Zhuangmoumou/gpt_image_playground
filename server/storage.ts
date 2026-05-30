@@ -65,3 +65,7 @@ export function readStorageDataUrl(storagePath: string, mimeType: string) {
   const buffer = readFileSync(join(config.storageDir, storagePath))
   return `data:${mimeType};base64,${buffer.toString('base64')}`
 }
+
+export function readStorageBuffer(storagePath: string) {
+  return readFileSync(join(config.storageDir, storagePath))
+}

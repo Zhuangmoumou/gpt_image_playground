@@ -495,6 +495,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     serverRequestMode: typeof record.serverRequestMode === 'boolean' ? record.serverRequestMode : true,
     serverBackgroundMode: typeof record.serverBackgroundMode === 'boolean' ? record.serverBackgroundMode : false,
     enableGlassEffect: typeof record.enableGlassEffect === 'boolean' ? record.enableGlassEffect : false,
+    lowPerformanceMode: typeof record.lowPerformanceMode === 'boolean' ? record.lowPerformanceMode : false,
     profiles,
     activeProfileId,
   }
@@ -784,4 +785,5 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   serverRequestMode: true,
   serverBackgroundMode: false,
   enableGlassEffect: false,
+  lowPerformanceMode: false,
 })

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
-import { exportServerData, importServerData, saveServerSettings, syncLocalDataToServer } from '../lib/serverSync'
-import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
+import { exportServerData, importServerData, pullServerDataToLocal, pushLocalDataToServer, writeLocalSettingsUpdatedAt } from '../lib/serverSync'
+import { useStore, exportData, importData, clearData, clearOriginalImageCache, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
   DEFAULT_FAL_BASE_URL,
@@ -314,7 +314,8 @@ export default function SettingsModal() {
   const [clearConfig, setClearConfig] = useState(true)
   const [clearTasks, setClearTasks] = useState(true)
   const [isImportingData, setIsImportingData] = useState(false)
-  const [isSyncingData, setIsSyncingData] = useState(false)
+  const [isSyncingToServer, setIsSyncingToServer] = useState(false)
+  const [isSyncingToClient, setIsSyncingToClient] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
   const [dragOverProfileId, setDragOverProfileId] = useState<string | null>(null)
@@ -486,7 +487,7 @@ export default function SettingsModal() {
     }
   }
 
-  const commitSettings = (nextDraft: AppSettings) => {
+  const normalizeDraftSettingsForSave = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
       const normalizedBaseUrl = profile.provider === 'fal'
         ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
@@ -505,19 +506,48 @@ export default function SettingsModal() {
       }
     })
     const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
-    const normalizedDraft = normalizeSettings({
+    return normalizeSettings({
       ...nextDraft,
       profiles: normalizedProfiles.length ? normalizedProfiles : [fallbackProfile],
       activeProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.activeProfileId)
         ? nextDraft.activeProfileId
         : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
     })
+  }
+
+  const updateDraftOnly = (nextDraft: AppSettings) => {
+    setDraft(normalizeDraftSettingsForSave(nextDraft))
+  }
+
+  const commitSettings = (nextDraft: AppSettings) => {
+    const normalizedDraft = normalizeDraftSettingsForSave(nextDraft)
     setDraft(normalizedDraft)
     setSettings(normalizedDraft)
-    void saveServerSettings(normalizedDraft).catch((err) => {
-      showToast(`保存服务端设置失败：${err instanceof Error ? err.message : String(err)}`, 'error')
-    })
+    writeLocalSettingsUpdatedAt(Date.now())
   }
+
+  const getCommittedDraft = useCallback(() => {
+    const nextTimeout = Number(timeoutInput)
+    const normalizedTimeout =
+      timeoutInput.trim() === '' || Number.isNaN(nextTimeout)
+        ? DEFAULT_SETTINGS.timeout
+        : nextTimeout
+    const agentMaxToolRounds = agentMaxToolRoundsInput.trim() === ''
+      ? DEFAULT_AGENT_MAX_TOOL_ROUNDS
+      : normalizeAgentMaxToolRounds(agentMaxToolRoundsInput, draft.agentMaxToolRounds)
+    const committedDraft = normalizeDraftSettingsForSave({
+      ...draft,
+      agentMaxToolRounds,
+      profiles: activeProviderIsOpenAICompatible
+        ? draft.profiles.map((profile) =>
+            profile.id === activeProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
+          )
+        : draft.profiles,
+    })
+    setTimeoutInput(String(getActiveApiProfile(committedDraft).timeout))
+    setAgentMaxToolRoundsInput(String(committedDraft.agentMaxToolRounds))
+    return committedDraft
+  }, [activeProfile.id, activeProviderIsOpenAICompatible, agentMaxToolRoundsInput, draft, timeoutInput])
 
   const updateCopyImportUrlOptions = (patch: Partial<CopyImportUrlOptions>) => {
     setCopyImportUrlOptions((previous) => {
@@ -602,37 +632,17 @@ export default function SettingsModal() {
       profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? { ...profile, ...patch } : profile),
     })
 
-  const updateActiveProfile = (patch: Partial<ApiProfile>, commit = false) => {
+  const updateActiveProfile = (patch: Partial<ApiProfile>, _commit = false) => {
     const nextDraft = getDraftWithActiveProfilePatch(patch)
-    setDraft(nextDraft)
-    if (commit) commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
   }
 
   const commitActiveProfilePatch = (patch: Partial<ApiProfile>) => {
     const nextDraft = getDraftWithActiveProfilePatch(patch)
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
   }
 
   const handleClose = () => {
-    const nextTimeout = Number(timeoutInput)
-    const normalizedTimeout =
-      timeoutInput.trim() === '' || Number.isNaN(nextTimeout)
-        ? DEFAULT_SETTINGS.timeout
-        : nextTimeout
-    const normalizedAgentMaxToolRounds = agentMaxToolRoundsInput.trim() === ''
-      ? DEFAULT_AGENT_MAX_TOOL_ROUNDS
-      : normalizeAgentMaxToolRounds(agentMaxToolRoundsInput, draft.agentMaxToolRounds)
-    const nextDraft = {
-      ...draft,
-      agentMaxToolRounds: normalizedAgentMaxToolRounds,
-      profiles: activeProviderIsOpenAICompatible
-        ? draft.profiles.map((profile) =>
-            profile.id === activeProfile.id ? { ...profile, timeout: normalizedTimeout } : profile,
-          )
-        : draft.profiles,
-    }
-    setAgentMaxToolRoundsInput(String(normalizedAgentMaxToolRounds))
-    commitSettings(nextDraft)
     setShowSettings(false)
   }
 
@@ -642,7 +652,7 @@ export default function SettingsModal() {
     const normalizedTimeout =
       timeoutInput.trim() === '' ? DEFAULT_SETTINGS.timeout : Number.isNaN(nextTimeout) ? activeProfile.timeout : nextTimeout
     setTimeoutInput(String(normalizedTimeout))
-    updateActiveProfile({ timeout: normalizedTimeout }, true)
+    updateActiveProfile({ timeout: normalizedTimeout })
   }, [draft, activeProfile.id, activeProfile.provider, activeProfile.timeout, timeoutInput])
 
   const commitAgentMaxToolRounds = useCallback(() => {
@@ -653,24 +663,48 @@ export default function SettingsModal() {
     if (value !== draft.agentMaxToolRounds) commitSettings({ ...draft, agentMaxToolRounds: value })
   }, [agentMaxToolRoundsInput, draft])
 
+  const handleSaveApiSettings = () => {
+    commitSettings(getCommittedDraft())
+    setShowProfileMenu(false)
+    showToast('API 配置已保存到当前浏览器，可使用同步按钮上传到服务端', 'success')
+  }
+
   useCloseOnEscape(showSettings, handleClose)
   usePreventBackgroundScroll(showSettings, showCustomProviderImport ? customProviderScrollBoundaryRef : settingsScrollBoundaryRef)
 
   if (!showSettings) return null
 
-  const handleSyncServer = async () => {
-    setIsSyncingData(true)
+  const refreshDraftFromStore = () => {
+    const nextDraft = normalizeSettings(useStore.getState().settings)
+    setDraft(nextDraft)
+    setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
+    setShowProfileMenu(false)
+  }
+
+  const handleSyncToServer = async () => {
+    setIsSyncingToServer(true)
     try {
-      await syncLocalDataToServer()
-      const nextDraft = normalizeSettings(useStore.getState().settings)
-      setDraft(nextDraft)
-      setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
-      setShowProfileMenu(false)
-      showToast('已同步到服务端', 'success')
+      commitSettings(getCommittedDraft())
+      await pushLocalDataToServer()
+      refreshDraftFromStore()
+      showToast('已同步至服务端', 'success')
     } catch (err) {
-      showToast(`同步失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+      showToast(`同步至服务端失败：${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
-      setIsSyncingData(false)
+      setIsSyncingToServer(false)
+    }
+  }
+
+  const handleSyncToClient = async () => {
+    setIsSyncingToClient(true)
+    try {
+      await pullServerDataToLocal()
+      refreshDraftFromStore()
+      showToast('已同步至客户端', 'success')
+    } catch (err) {
+      showToast(`同步至客户端失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setIsSyncingToClient(false)
     }
   }
 
@@ -710,7 +744,7 @@ export default function SettingsModal() {
         profiles: [...draft.profiles, profile],
         activeProfileId: profile.id
     })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
     setShowProfileMenu(false)
   }
 
@@ -727,14 +761,14 @@ export default function SettingsModal() {
       profiles: [...draft.profiles, profile],
       activeProfileId: profile.id,
     })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
     setShowProfileMenu(false)
   }
 
   const switchProfile = (id: string) => {
     setReusedTaskApiProfile(null)
     const nextDraft = normalizeSettings({ ...draft, activeProfileId: id })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
     setShowProfileMenu(false)
   }
   
@@ -795,7 +829,7 @@ export default function SettingsModal() {
     newProfiles.splice(newTargetIndex, 0, removed)
 
     const nextDraft = normalizeSettings({ ...draft, profiles: newProfiles })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
   }
 
   const handleProfileDrop = (e: React.DragEvent, targetId: string) => {
@@ -884,7 +918,7 @@ export default function SettingsModal() {
       profiles: nextProfiles,
       activeProfileId: draft.activeProfileId === id ? nextProfiles[0].id : draft.activeProfileId,
     })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
   }
 
   const handleProviderReorder = (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => {
@@ -903,7 +937,7 @@ export default function SettingsModal() {
     newOrder.splice(newTargetIndex, 0, removed)
 
     const nextDraft = normalizeSettings({ ...draft, providerOrder: newOrder })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
   }
 
   const handleProviderTypeChange = (value: string | number) => {
@@ -959,7 +993,7 @@ export default function SettingsModal() {
             provider.id === editingCustomProviderId ? customProvider : provider,
           ),
         })
-        commitSettings(nextDraft)
+        updateDraftOnly(nextDraft)
         setShowCustomProviderImport(false)
         setEditingCustomProviderId(null)
         setCustomProviderImportError(null)
@@ -973,7 +1007,7 @@ export default function SettingsModal() {
         customProviders: [...draft.customProviders, customProvider],
         profiles: draft.profiles.map((profile) => profile.id === activeProfile.id ? nextProfile : profile),
       })
-      commitSettings(nextDraft)
+      updateDraftOnly(nextDraft)
       setShowCustomProviderImport(false)
       setEditingCustomProviderId(null)
       setCustomProviderImportError(null)
@@ -999,7 +1033,7 @@ export default function SettingsModal() {
         profile.provider === providerId ? switchApiProfileProvider(profile, 'openai') : profile,
       ),
     })
-    commitSettings(nextDraft)
+    updateDraftOnly(nextDraft)
     showToast('服务商已删除', 'success')
   }
 
@@ -1040,7 +1074,6 @@ export default function SettingsModal() {
               activeProfileId: importedProfile.id,
             })
         setDraft(nextDraft)
-        setSettings(nextDraft)
         setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
         setShowCustomProviderImport(false)
         setEditingCustomProviderId(null)
@@ -1171,6 +1204,24 @@ export default function SettingsModal() {
                     >
                       退出登录
                     </button>
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">低性能模式</span>
+                    <button
+                      type="button"
+                      onClick={() => commitSettings({ ...draft, lowPerformanceMode: !draft.lowPerformanceMode })}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.lowPerformanceMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={draft.lowPerformanceMode}
+                      aria-label="低性能模式"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.lowPerformanceMode ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    关闭大部分模糊、阴影和入场动画，优先保证低性能设备上的滚动与交互流畅度。
                   </div>
                 </div>
                 <div className="block">
@@ -1631,7 +1682,7 @@ export default function SettingsModal() {
                   <span className="block text-sm text-gray-600 dark:text-gray-300">服务端发出请求</span>
                   <button
                     type="button"
-                    onClick={() => commitSettings({ ...draft, serverRequestMode: !draft.serverRequestMode })}
+                    onClick={() => updateDraftOnly({ ...draft, serverRequestMode: !draft.serverRequestMode })}
                     className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                     role="switch"
                     aria-checked={draft.serverRequestMode}
@@ -1650,7 +1701,7 @@ export default function SettingsModal() {
                   <span className="block text-sm text-gray-600 dark:text-gray-300">抗中断后台生成</span>
                   <button
                     type="button"
-                    onClick={() => commitSettings({ ...draft, serverBackgroundMode: !draft.serverBackgroundMode })}
+                    onClick={() => updateDraftOnly({ ...draft, serverBackgroundMode: !draft.serverBackgroundMode })}
                     disabled={!draft.serverRequestMode}
                     className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode && draft.serverBackgroundMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${!draft.serverRequestMode ? 'cursor-not-allowed opacity-60' : ''}`}
                     role="switch"
@@ -1859,6 +1910,21 @@ export default function SettingsModal() {
                   />
                 </label>
               )}
+
+              <div className="sticky bottom-0 -mx-5 mt-6 border-t border-gray-100 bg-white/95 px-5 pt-4 backdrop-blur dark:border-white/[0.08] dark:bg-gray-900/95 sm:-mx-6 sm:px-6">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-400">
+                    保存按钮只会写入当前浏览器；如需更新服务端，请到「数据管理」中执行同步至服务端。
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveApiSettings}
+                    className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-500"
+                  >
+                    保存 API 配置
+                  </button>
+                </div>
+              </div>
             </div>
             )}
             
@@ -1874,20 +1940,46 @@ export default function SettingsModal() {
                 </div>
 
                 <div className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4 dark:border-blue-500/20 dark:bg-blue-500/10 space-y-4 shadow-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">手动同步</h4>
-                      <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">将当前页面中的改动写入服务端，并重新拉取服务端快照。</div>
-                    </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">手动同步</h4>
+                    <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">按方向分别执行：将当前浏览器改动推送到服务端，或把服务端最新数据拉取到当前浏览器。</div>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <button
                       type="button"
-                      onClick={handleSyncServer}
-                      disabled={isSyncingData}
-                      className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={handleSyncToServer}
+                      disabled={isSyncingToServer || isSyncingToClient}
+                      className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {isSyncingData ? '同步中...' : '同步'}
+                      {isSyncingToServer ? '同步至服务端中...' : '同步至服务端'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSyncToClient}
+                      disabled={isSyncingToServer || isSyncingToClient}
+                      className="rounded-xl bg-white/80 px-4 py-2.5 text-sm font-bold text-blue-700 transition hover:bg-white dark:bg-white/[0.06] dark:text-blue-300 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSyncingToClient ? '同步至客户端中...' : '同步至客户端'}
                     </button>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-amber-100 bg-amber-50/40 p-4 dark:border-amber-500/20 dark:bg-amber-500/10 space-y-4 shadow-sm">
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">清除原图缓存</h4>
+                    <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">只删除浏览器里的原图缓存，保留记录和缩略图。再次打开详情、灯箱或编辑时，会按需把原图重新拉回来；未同步到服务端的原图不会被清理。</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDialog({
+                      title: '清除原图缓存',
+                      message: '确定要删除当前浏览器中已同步的原图缓存吗？会保留缩略图，后续需要原图时会自动重新下载。',
+                      action: () => clearOriginalImageCache(),
+                    })}
+                    className="w-full rounded-xl border border-amber-200/70 bg-white/80 px-4 py-2.5 text-sm font-medium text-amber-700 transition hover:bg-white dark:border-amber-500/25 dark:bg-white/[0.06] dark:text-amber-300 dark:hover:bg-white/[0.1]"
+                  >
+                    清除原图缓存，仅保留缩略图
+                  </button>
                 </div>
 
                 <div className="rounded-2xl border border-gray-100 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.02] space-y-4 shadow-sm">

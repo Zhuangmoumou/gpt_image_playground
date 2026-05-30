@@ -171,7 +171,29 @@ input[type="number"] {
   background-color: rgba(255, 255, 255, 0.72);
 }
 
+[data-low-performance="on"] :where([class*="backdrop-blur"]) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+[data-low-performance="on"] :where([class*="bg-white/95"], [class*="bg-white/90"], [class*="bg-white/80"], [class*="bg-white/70"], [class*="bg-white/60"]) {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+
+[data-low-performance="on"] :where([class*="animate-"]) {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+[data-low-performance="on"] :where([class*="shadow-"]) {
+  box-shadow: none !important;
+}
+
 @media (prefers-color-scheme: dark) {
+  [data-low-performance="on"] :where([class*="dark:bg-gray-900/95"], [class*="dark:bg-gray-900/90"], [class*="dark:bg-gray-900/80"], [class*="dark:bg-gray-900/70"], [class*="dark:bg-gray-800/90"], [class*="dark:bg-gray-950/95"], [class*="dark:bg-zinc-950/70"]) {
+    background-color: rgba(17, 24, 39, 0.96) !important;
+  }
+
   [data-glass-effect="on"] :where([class*="dark:bg-gray-900/95"], [class*="dark:bg-zinc-950/70"]) {
     background-color: rgba(24, 24, 27, 0.68);
   }

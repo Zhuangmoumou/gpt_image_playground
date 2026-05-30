@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { initStore } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { bootstrapServerData } from './lib/serverSync'
+import { bootstrapServerData, flushAutoSync, pullServerDataToLocal, scheduleAutoSync } from './lib/serverSync'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
@@ -23,6 +23,8 @@ export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
   const enableGlassEffect = useStore((s) => s.settings.enableGlassEffect)
+  const lowPerformanceMode = useStore((s) => s.settings.lowPerformanceMode)
+  const recordSyncStatusText = useStore((s) => s.recordSyncStatusText)
   const initializedRef = useRef(false)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
@@ -55,6 +57,27 @@ export default function App() {
   }, [setSettings])
 
   useEffect(() => {
+    const unsubscribe = useStore.subscribe((state, previous) => {
+      if (state.settings !== previous.settings || state.tasks !== previous.tasks || state.agentConversations !== previous.agentConversations) {
+        scheduleAutoSync('store-change')
+      }
+    })
+
+    const handleVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      void pullServerDataToLocal().finally(() => void flushAutoSync())
+    }
+
+    document.addEventListener('visibilitychange', handleVisible)
+    window.addEventListener('focus', handleVisible)
+    return () => {
+      unsubscribe()
+      document.removeEventListener('visibilitychange', handleVisible)
+      window.removeEventListener('focus', handleVisible)
+    }
+  }, [])
+
+  useEffect(() => {
     const preventPageImageDrag = (e: DragEvent) => {
       if ((e.target as HTMLElement | null)?.closest('img')) {
         e.preventDefault()
@@ -66,8 +89,13 @@ export default function App() {
   }, [])
 
   return (
-    <div data-glass-effect={enableGlassEffect ? 'on' : 'off'}>
+    <div data-glass-effect={enableGlassEffect ? 'on' : 'off'} data-low-performance={lowPerformanceMode ? 'on' : 'off'}>
       <Header />
+      {recordSyncStatusText && (
+        <div className="fixed right-4 top-20 z-50 rounded-full bg-blue-600/90 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur sm:right-6">
+          {recordSyncStatusText}
+        </div>
+      )}
       {appMode === 'agent' ? (
         <AgentWorkspace />
       ) : (

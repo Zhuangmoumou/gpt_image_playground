@@ -98,6 +98,7 @@ export interface AppSettings {
   serverRequestMode: boolean
   serverBackgroundMode: boolean
   enableGlassEffect: boolean
+  lowPerformanceMode: boolean
   profiles: ApiProfile[]
   activeProfileId: string
 }
@@ -140,6 +141,7 @@ export interface MaskDraft {
 // ===== 任务记录 =====
 
 export type TaskStatus = 'running' | 'done' | 'error'
+export type SyncState = 'synced' | 'pending_push' | 'pending_delete_confirm' | 'pending_delete_push' | 'conflict'
 
 export interface TaskRecord {
   id: string
@@ -191,6 +193,10 @@ export interface TaskRecord {
   elapsed: number | null
   /** 最后更新时间，用于服务端增量同步冲突判断 */
   updatedAt?: number
+  /** 删除时间；存在时表示该记录已被标记删除 */
+  deletedAt?: number | null
+  /** 当前同步状态 */
+  syncState?: SyncState
   /** 服务端后台生成任务 ID */
   serverJobId?: string
   /** 是否收藏 */
@@ -260,6 +266,8 @@ export interface AgentConversation {
   activeRoundId?: string | null
   createdAt: number
   updatedAt: number
+  deletedAt?: number | null
+  syncState?: SyncState
   rounds: AgentRound[]
   messages: AgentMessage[]
 }
@@ -271,6 +279,12 @@ export interface StoredImage {
   dataUrl: string
   /** 图片首次存储时间（ms） */
   createdAt?: number
+  /** 最后更新时间（ms） */
+  updatedAt?: number
+  /** 删除时间；存在时表示该记录已被标记删除 */
+  deletedAt?: number | null
+  /** 当前同步状态 */
+  syncState?: SyncState
   /** 图片来源：用户上传 / API 生成 / 遮罩 */
   source?: 'upload' | 'generated' | 'mask'
   /** 原图宽度 */
@@ -283,6 +297,12 @@ export interface StoredImageThumbnail {
   id: string
   /** 列表缩略图，用于避免卡片页解码完整 4K 原图 */
   thumbnailDataUrl: string
+  /** 最后更新时间（ms） */
+  updatedAt?: number
+  /** 删除时间；存在时表示该记录已被标记删除 */
+  deletedAt?: number | null
+  /** 当前同步状态 */
+  syncState?: SyncState
   /** 原图宽度 */
   width?: number
   /** 原图高度 */

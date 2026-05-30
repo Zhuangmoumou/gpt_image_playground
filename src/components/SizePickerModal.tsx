@@ -44,9 +44,9 @@ function findPresetForSize(size: string) {
 }
 
 export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true }: Props) {
-  usePreventBackgroundScroll(true)
-
   const modalRef = useRef<HTMLDivElement>(null)
+  usePreventBackgroundScroll(true, modalRef)
+
   const mouseDownTargetRef = useRef<EventTarget | null>(null)
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -176,9 +176,9 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in" />
       <div
         ref={modalRef}
-        className="relative z-10 w-full max-w-md rounded-3xl border border-white/50 bg-white/95 p-5 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10"
+        className="relative z-10 flex max-h-[88dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-white/50 bg-white/95 shadow-2xl ring-1 ring-black/5 animate-modal-in dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10 sm:max-h-[82dvh]"
       >
-        <div className="mb-5 flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
           <div>
             <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">设置图像尺寸</h3>
             <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">当前：{currentSize || 'auto'}</p>
@@ -194,7 +194,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
           </button>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 pb-4 pr-4 sm:px-6 sm:pb-5 sm:pr-5">
           <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
             {allowAuto && (
               <button
@@ -218,7 +218,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             </button>
           </div>
 
-          <div className="h-[380px] max-h-[55vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 pr-1 -mr-1 pb-2">
+          <div className="min-h-[280px] pb-2">
             {mode === 'auto' && (
               <div className="flex h-full animate-fade-in items-center justify-center pt-8 pb-4 text-center">
                 <div>
@@ -344,6 +344,9 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             )}
           </div>
 
+        </div>
+
+        <div className="border-t border-gray-100 bg-white/95 px-5 py-4 backdrop-blur dark:border-white/[0.08] dark:bg-gray-900/95 sm:px-6 sm:py-5">
           <div className="rounded-2xl bg-gray-50 px-4 py-3 dark:bg-white/[0.03]">
             <div className="text-xs text-gray-400 dark:text-gray-500">将使用</div>
             <div className="mt-1 flex items-center gap-2">
@@ -360,7 +363,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                   onTouchCancel={hideHint}
                   onClick={showHint}
                 >
-                  <svg className="w-5 h-5 text-yellow-500 cursor-pointer" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 cursor-pointer text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <ViewportTooltip visible={hintVisible} className="w-56 whitespace-pre-line text-center">
@@ -370,22 +373,22 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
               )}
             </div>
           </div>
-        </div>
 
-        <div className="mt-5 flex gap-2">
-          <button
-            onClick={onClose}
-            className="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 text-sm text-gray-600 transition hover:bg-gray-200 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]"
-          >
-            取消
-          </button>
-          <button
-            onClick={applySize}
-            disabled={!previewSize}
-            className="flex-1 rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            确定
-          </button>
+          <div className="mt-4 flex gap-2">
+            <button
+              onClick={onClose}
+              className="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 text-sm text-gray-600 transition hover:bg-gray-200 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]"
+            >
+              取消
+            </button>
+            <button
+              onClick={applySize}
+              disabled={!previewSize}
+              className="flex-1 rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              确定
+            </button>
+          </div>
         </div>
       </div>
     </div>
