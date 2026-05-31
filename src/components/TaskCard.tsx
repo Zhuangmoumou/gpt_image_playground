@@ -76,6 +76,7 @@ export default function TaskCard({
   const [swipeActionActive, setSwipeActionActive] = useState(false)
   const [swipeDirection, setSwipeDirection] = useState<-1 | 0 | 1>(0)
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
+  const [isVisible, setIsVisible] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
   const settings = useStore((s) => s.settings)
   const streamPreviewSrc = useStore((s) => s.streamPreviews[task.id] || '')
@@ -237,6 +238,20 @@ export default function TaskCard({
     setStreamPreviewLoaded(false)
   }, [streamPreviewSrc, task.id])
 
+  useEffect(() => {
+    const node = cardRef.current
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setIsVisible(true)
+      return
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+      setIsVisible(Boolean(entry?.isIntersecting))
+    }, { rootMargin: '240px 0px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
   // 定时更新运行中任务的计时
   useEffect(() => {
     if (task.status !== 'running' && !(task.status === 'error' && (task.falRecoverable || task.customRecoverable))) return
@@ -272,6 +287,7 @@ export default function TaskCard({
           applyThumbnail(thumbnail)
           return
         }
+        if (!isVisible) return
         await pullSpecificThumbnailsToLocal([imageId]).catch(() => {})
         const remoteThumbnail = await ensureImageThumbnailCached(imageId).catch(() => undefined)
         if (!cancelled && remoteThumbnail) applyThumbnail(remoteThumbnail)
@@ -284,7 +300,7 @@ export default function TaskCard({
       cancelled = true
       unsubscribe?.()
     }
-  }, [task.outputImages])
+  }, [isVisible, task.outputImages])
 
   const duration = (() => {
     let seconds: number

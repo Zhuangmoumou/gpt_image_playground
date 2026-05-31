@@ -9,6 +9,7 @@ export default function TaskGrid() {
   const filterFavorite = useStore((s) => s.filterFavorite)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
+  const enableTouchSwipeSelect = useStore((s) => s.settings.enableTouchSwipeSelect)
   const selectedTaskIds = useStore((s) => s.selectedTaskIds)
   const setSelectedTaskIds = useStore((s) => s.setSelectedTaskIds)
   const clearSelection = useStore((s) => s.clearSelection)
@@ -314,6 +315,7 @@ export default function TaskGrid() {
               onEditOutputs={() => editOutputs(task)}
               onDelete={() => handleDelete(task)}
               isSelected={selectedTaskIds.includes(task.id)}
+              disableSwipe={!enableTouchSwipeSelect}
             />
           </div>
         ))}

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, markAgentConversationForDeletion, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, updateTaskInStore, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, ensureImageCached, ensureImageThumbnailCached, markAgentConversationForDeletion, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, subscribeImageThumbnail, updateTaskInStore, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { downloadImageIds } from '../lib/downloadImages'
+import { pullSpecificThumbnailsToLocal } from '../lib/serverSync'
 import TaskCard from './TaskCard'
 import ViewportTooltip from './ViewportTooltip'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -54,40 +55,87 @@ function AgentActionButton({
 }
 
 function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string; imageIndex: number; maskImageId?: string | null }) {
-  const [src, setSrc] = useState<string>(() => getCachedImage(imageId) || '')
+  const [src, setSrc] = useState<string>('')
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
 
   useEffect(() => {
     let cancelled = false
+    let baseThumbnail: { dataUrl: string } | undefined
+    let maskThumbnail: { dataUrl: string } | undefined
+    let previewRun = 0
+    const unsubscribers: Array<() => void> = []
 
-    if (maskImageId) {
-      Promise.all([ensureImageCached(imageId, true), ensureImageCached(maskImageId, true)])
-        .then(async ([baseUrl, maskUrl]) => {
-          if (!baseUrl || !maskUrl) return baseUrl || ''
-          return createMaskPreviewDataUrl(baseUrl, maskUrl)
-        })
+    setSrc('')
+
+    const applyPreview = () => {
+      if (!baseThumbnail) return
+      if (!maskImageId || !maskThumbnail) {
+        setSrc(baseThumbnail.dataUrl)
+        return
+      }
+
+      const run = ++previewRun
+      createMaskPreviewDataUrl(baseThumbnail.dataUrl, maskThumbnail.dataUrl)
         .then((url) => {
-          if (!cancelled && url) setSrc(url)
+          if (!cancelled && run === previewRun) setSrc(url)
         })
         .catch(() => {
-          if (!cancelled) setSrc(getCachedImage(imageId) || '')
+          if (!cancelled && run === previewRun) setSrc(baseThumbnail?.dataUrl ?? '')
         })
-      return () => { cancelled = true }
     }
 
-    const cached = getCachedImage(imageId)
-    if (cached) {
-      setSrc(cached)
-      return () => { cancelled = true }
+    unsubscribers.push(subscribeImageThumbnail(imageId, (thumbnail) => {
+      if (cancelled) return
+      baseThumbnail = thumbnail
+      applyPreview()
+    }))
+    if (maskImageId) {
+      unsubscribers.push(subscribeImageThumbnail(maskImageId, (thumbnail) => {
+        if (cancelled) return
+        maskThumbnail = thumbnail
+        applyPreview()
+      }))
     }
-    ensureImageCached(imageId, true).then((url) => {
-      if (!cancelled && url) setSrc(url)
-    })
-    return () => { cancelled = true }
+
+    const loadThumbnails = async () => {
+      const ids = [imageId, maskImageId].filter((id): id is string => Boolean(id))
+      const thumbnails = await Promise.all(ids.map((id) => ensureImageThumbnailCached(id).catch(() => undefined)))
+      const missingIds: string[] = []
+      thumbnails.forEach((thumbnail, index) => {
+        const id = ids[index]
+        if (!id) return
+        if (!thumbnail) {
+          missingIds.push(id)
+          return
+        }
+        if (id === imageId) baseThumbnail = thumbnail
+        else if (id === maskImageId) maskThumbnail = thumbnail
+      })
+      if (!cancelled) applyPreview()
+
+      if (missingIds.length > 0) {
+        await pullSpecificThumbnailsToLocal(missingIds).catch(() => {})
+        const pulled = await Promise.all(missingIds.map((id) => ensureImageThumbnailCached(id).catch(() => undefined)))
+        pulled.forEach((thumbnail, index) => {
+          if (!thumbnail) return
+          const id = missingIds[index]
+          if (id === imageId) baseThumbnail = thumbnail
+          else if (id === maskImageId) maskThumbnail = thumbnail
+        })
+        if (!cancelled) applyPreview()
+      }
+    }
+
+    void loadThumbnails()
+
+    return () => {
+      cancelled = true
+      unsubscribers.forEach((unsubscribe) => unsubscribe())
+    }
   }, [imageId, maskImageId])
 
   return (
-    <div 
+    <div
       className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg shadow-sm cursor-pointer transition-opacity hover:opacity-90 ${
         maskImageId ? 'border-2 border-blue-500' : 'border border-gray-200 dark:border-white/[0.08]'
       }`}

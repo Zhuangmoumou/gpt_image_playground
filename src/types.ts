@@ -88,6 +88,7 @@ export interface AppSettings {
   providerOrder?: string[]
   clearInputAfterSubmit: boolean
   persistInputOnRestart: boolean
+  enableTouchSwipeSelect: boolean
   reuseTaskApiProfileTemporarily: boolean
   alwaysShowRetryButton: boolean
   enterSubmit: boolean

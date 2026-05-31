@@ -4,6 +4,7 @@ import { requireAuth } from '../auth.js'
 import { db, jsonColumn } from '../db.js'
 import { getRawUserSettings, upsertUserSettings } from '../settings.js'
 import { readStorageBuffer, readStorageDataUrl, saveBufferIfMissing, saveCompressedThumbnailBuffer, saveDataUrlIfMissing } from '../storage.js'
+import { getPersistableTask } from '../../src/lib/taskPayloadSanitizer.js'
 
 const storedImageSchema = z.object({
   id: z.string().min(1),
@@ -91,6 +92,7 @@ interface SettingsRow {
 }
 
 interface TaskRow {
+  id: string
   task_json: string
   updated_at: number
 }
@@ -160,6 +162,13 @@ function getIncomingVersion(updatedAt: number, deletedAt: number | null) {
   return Math.max(updatedAt, deletedAt ?? 0)
 }
 
+function shouldReplaceThumbnail(existing: { updated_at: number; thumbnail_version?: number | null } | undefined, incomingUpdatedAt: number, incomingThumbnailVersion: number) {
+  if (!existing) return true
+  if (existing.updated_at > incomingUpdatedAt) return false
+  if (existing.updated_at === incomingUpdatedAt && (existing.thumbnail_version ?? 0) > incomingThumbnailVersion) return false
+  return true
+}
+
 function ids(values: string[] | undefined) {
   return Array.from(new Set((values ?? []).filter(Boolean)))
 }
@@ -212,6 +221,7 @@ function upsertTask(userId: string, task: Record<string, unknown>) {
   const deletedAt = getDeletedAt(task)
   const createdAt = typeof task.createdAt === 'number' ? task.createdAt : updatedAt
   const status = typeof task.status === 'string' ? task.status : 'done'
+  const storedTask = getPersistableTask({ ...task, updatedAt, deletedAt, syncState: 'synced' })
   const existing = db.prepare('SELECT revision, updated_at, deleted_at FROM tasks WHERE user_id = ? AND id = ?').get(userId, id) as { revision: number; updated_at: number; deleted_at: number | null } | undefined
   if (getRowVersion(existing) > getIncomingVersion(updatedAt, deletedAt)) return
 
@@ -227,7 +237,7 @@ function upsertTask(userId: string, task: Record<string, unknown>) {
   `).run(
     id,
     userId,
-    JSON.stringify({ ...task, updatedAt, deletedAt, syncState: 'synced' }),
+    JSON.stringify(storedTask),
     status,
     (existing?.revision ?? 0) + 1,
     createdAt,
@@ -286,8 +296,10 @@ function upsertThumbnail(userId: string, thumbnail: z.infer<typeof thumbnailSche
   const now = Date.now()
   const updatedAt = thumbnail.updatedAt ?? now
   const deletedAt = typeof thumbnail.deletedAt === 'number' && Number.isFinite(thumbnail.deletedAt) ? thumbnail.deletedAt : null
-  const existing = db.prepare('SELECT updated_at FROM thumbnails WHERE user_id = ? AND image_id = ?').get(userId, thumbnail.id) as { updated_at: number } | undefined
-  if ((existing?.updated_at ?? 0) > Math.max(updatedAt, deletedAt ?? 0)) return
+  const thumbnailVersion = thumbnail.thumbnailVersion ?? 1
+  const incomingVersion = Math.max(updatedAt, deletedAt ?? 0)
+  const existing = db.prepare('SELECT updated_at, thumbnail_version FROM thumbnails WHERE user_id = ? AND image_id = ?').get(userId, thumbnail.id) as { updated_at: number; thumbnail_version: number } | undefined
+  if (!shouldReplaceThumbnail(existing, incomingVersion, thumbnailVersion)) return
 
   if (deletedAt != null) {
     db.prepare('DELETE FROM thumbnails WHERE user_id = ? AND image_id = ?').run(userId, thumbnail.id)
@@ -311,7 +323,7 @@ function upsertThumbnail(userId: string, thumbnail: z.infer<typeof thumbnailSche
     saved.storagePath,
     thumbnail.width ?? null,
     thumbnail.height ?? null,
-    thumbnail.thumbnailVersion ?? 1,
+    thumbnailVersion,
     updatedAt,
   )
 }
@@ -372,8 +384,9 @@ async function upsertThumbnailBinary(userId: string, thumbnail: {
 
   const now = Date.now()
   const updatedAt = thumbnail.updatedAt ?? now
-  const existing = db.prepare('SELECT updated_at FROM thumbnails WHERE user_id = ? AND image_id = ?').get(userId, thumbnail.id) as { updated_at: number } | undefined
-  if ((existing?.updated_at ?? 0) > updatedAt) return
+  const thumbnailVersion = thumbnail.thumbnailVersion ?? 1
+  const existing = db.prepare('SELECT updated_at, thumbnail_version FROM thumbnails WHERE user_id = ? AND image_id = ?').get(userId, thumbnail.id) as { updated_at: number; thumbnail_version: number } | undefined
+  if (!shouldReplaceThumbnail(existing, updatedAt, thumbnailVersion)) return
 
   const saved = await saveCompressedThumbnailBuffer(thumbnail.buffer)
   db.prepare(`
@@ -391,7 +404,7 @@ async function upsertThumbnailBinary(userId: string, thumbnail: {
     saved.storagePath,
     thumbnail.width ?? null,
     thumbnail.height ?? null,
-    thumbnail.thumbnailVersion ?? 1,
+    thumbnailVersion,
     updatedAt,
   )
 }
@@ -475,17 +488,26 @@ function getTasks(userId: string, taskIds?: string[]) {
   const selectedIds = ids(taskIds)
   if (taskIds && selectedIds.length === 0) return []
   const query = selectedIds.length
-    ? `SELECT task_json, updated_at FROM tasks WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY created_at DESC`
-    : 'SELECT task_json, updated_at FROM tasks WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
+    ? `SELECT id, task_json, updated_at FROM tasks WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY created_at DESC`
+    : 'SELECT id, task_json, updated_at FROM tasks WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
   return (db.prepare(query).all(userId, ...selectedIds) as TaskRow[])
     .map((row) => {
       const task = jsonColumn<Record<string, unknown>>(row.task_json, {})
-      return {
+      const nextTask = getPersistableTask({
         ...task,
         updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : row.updated_at,
         deletedAt: null,
         syncState: 'synced',
+      })
+      const nextJson = JSON.stringify(nextTask)
+      if (nextJson !== row.task_json) {
+        try {
+          db.prepare('UPDATE tasks SET task_json = ? WHERE user_id = ? AND id = ?').run(nextJson, userId, row.id)
+        } catch {
+          // 旧记录清理是性能优化，失败不影响本次返回已清理的记录。
+        }
       }
+      return nextTask
     })
 }
 

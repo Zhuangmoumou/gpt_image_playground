@@ -40,7 +40,7 @@ export default function App() {
     const searchParams = new URLSearchParams(window.location.search)
     const nextSettings = buildSettingsFromUrlParams(useStore.getState().settings, searchParams)
 
-    setSettings(nextSettings)
+    if (Object.keys(nextSettings).length > 0) setSettings(nextSettings)
 
     if (hasUrlSettingParams(searchParams)) {
       clearUrlSettingParams(searchParams)
@@ -66,11 +66,9 @@ export default function App() {
       }
 
       await initStore()
-      try {
-        await bootstrapServerData()
-      } catch (err) {
+      void bootstrapServerData().catch((err) => {
         useStore.getState().showToast(err instanceof Error ? err.message : String(err), 'error')
-      }
+      })
     })()
   }, [setSettings])
 

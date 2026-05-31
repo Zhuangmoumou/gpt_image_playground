@@ -588,6 +588,12 @@ describe('custom providers', () => {
     expect(normalizeSettings({ agentScrollToBottomAfterSubmit: false }).agentScrollToBottomAfterSubmit).toBe(false)
   })
 
+  it('enables touch swipe select by default', () => {
+    expect(DEFAULT_SETTINGS.enableTouchSwipeSelect).toBe(true)
+    expect(normalizeSettings({}).enableTouchSwipeSelect).toBe(true)
+    expect(normalizeSettings({ enableTouchSwipeSelect: false }).enableTouchSwipeSelect).toBe(false)
+  })
+
   it('restores OpenAI-compatible URL after switching through fal.ai', () => {
     const openaiProfile = createDefaultOpenAIProfile({
       baseUrl: 'https://api.compat.example.com/v1',

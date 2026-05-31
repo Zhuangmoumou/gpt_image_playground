@@ -48,13 +48,14 @@ import { serverApi } from './lib/serverApi'
 import { getGenerationJob, submitGenerationJob, type AgentGenerationJobResult, type ImageGenerationJobResult } from './lib/serverGenerationJobs'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, createAgentResponsesBody, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
-import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
+import { getDataUrlDecodedByteSize, IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
+import { getPersistableResponseOutputItem, getPersistableTask } from './lib/taskPayloadSanitizer'
 
 // ===== Image cache =====
 // 内存缓存，id → dataUrl。只保留少量最近使用图片，避免大量 4K data URL 常驻内存。
@@ -571,24 +572,6 @@ function mergeAgentConversationsForStorage(stored: AgentConversation[], legacy: 
     }
   }
   return [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
-}
-
-function getPersistableResponseOutputItem(item: ResponsesOutputItem): ResponsesOutputItem {
-  if (item.type !== 'image_generation_call' || item.result == null) return item
-
-  if (typeof item.result === 'string') {
-    const { result: _result, ...rest } = item
-    return rest
-  }
-
-  if (!isRecord(item.result)) return item
-  const { b64_json: _b64Json, base64: _base64, image: _image, data: _data, ...restResult } = item.result
-  if (Object.keys(restResult).length === 0) {
-    const { result: _result, ...rest } = item
-    return rest
-  }
-
-  return { ...item, result: restResult }
 }
 
 function getPersistableAgentConversations(conversations: AgentConversation[]): AgentConversation[] {
@@ -1189,7 +1172,6 @@ export const useStore = create<AppState>()(
       // Settings
       settings: { ...DEFAULT_SETTINGS },
       setSettings: (s) => {
-        writeLocalSettingsUpdatedAtForSync(Date.now())
         set((st) => {
         const previous = normalizeSettings(st.settings)
         const incoming = s as Partial<AppSettings>
@@ -1223,6 +1205,9 @@ export const useStore = create<AppState>()(
           )
         }
         const settings = normalizeSettings(merged)
+        if (JSON.stringify(settings) === JSON.stringify(previous)) return st
+
+        writeLocalSettingsUpdatedAtForSync(Date.now())
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
         return {
           settings,
@@ -1615,25 +1600,6 @@ useStore.subscribe((state) => {
 let uid = 0
 function genId(): string {
   return Date.now().toString(36) + (++uid).toString(36) + Math.random().toString(36).slice(2, 6)
-}
-
-function getPersistableRawResponsePayload(rawResponsePayload?: string) {
-  if (!rawResponsePayload) return rawResponsePayload
-  try {
-    const payload = JSON.parse(rawResponsePayload) as { output?: unknown }
-    if (!Array.isArray(payload.output)) return rawResponsePayload
-    const output = payload.output.map((item) =>
-      isRecord(item) ? getPersistableResponseOutputItem(item as ResponsesOutputItem) : item,
-    )
-    return JSON.stringify({ ...payload, output }, null, 2)
-  } catch {
-    return rawResponsePayload
-  }
-}
-
-function getPersistableTask(task: TaskRecord): TaskRecord {
-  const rawResponsePayload = getPersistableRawResponsePayload(task.rawResponsePayload)
-  return rawResponsePayload === task.rawResponsePayload ? task : { ...task, rawResponsePayload }
 }
 
 function putTask(task: TaskRecord): Promise<IDBValidKey> {
@@ -4602,19 +4568,11 @@ export async function removeTask(task: TaskRecord, syncToServer = false) {
   showToast(syncToServer ? '记录已标记，并将同步删除' : '记录已标记，可稍后决定是否同步删除', 'success')
 }
 
-function estimateDataUrlBytes(dataUrl: string) {
-  const commaIndex = dataUrl.indexOf(',')
-  if (commaIndex < 0) return dataUrl.length
-  const base64 = dataUrl.slice(commaIndex + 1)
-  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
-}
-
 export async function estimateClearableOriginalImageCacheBytes() {
   const images = await getAllImages()
   return images
     .filter((image) => image.syncState === 'synced' && !image.deletedAt && image.dataUrl)
-    .reduce((total, image) => total + estimateDataUrlBytes(image.dataUrl), 0)
+    .reduce((total, image) => total + getDataUrlDecodedByteSize(image.dataUrl), 0)
 }
 
 export async function clearOriginalImageCache() {

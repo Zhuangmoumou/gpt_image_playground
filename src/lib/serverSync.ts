@@ -2,6 +2,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import type { AgentConversation, AppSettings, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from '../types'
 import { publishStoredThumbnail, useStore } from '../store'
 import { DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
+import { getPersistableTask } from './taskPayloadSanitizer'
 import {
   deleteAgentConversation,
   deleteImage,
@@ -21,12 +22,12 @@ import { serverApi } from './serverApi'
 const LOCAL_SETTINGS_UPDATED_AT_KEY = 'gpt-image-playground.settings-updated-at'
 const AUTO_SYNC_DELAY_MS = 1500
 const THUMBNAIL_PULL_CONCURRENCY = 4
+const BINARY_UPLOAD_CONCURRENCY = 4
 
 let autoSyncTimer: number | null = null
 let autoSyncRunning: Promise<void> | null = null
 let autoSyncQueued = false
 let remoteApplyDepth = 0
-let serverSettingsHydrated = false
 const inflightThumbnailPulls = new Map<string, Promise<void>>()
 
 interface ServerManifestItem {
@@ -139,17 +140,10 @@ function ensureLocalSettingsUpdatedAt(settings: AppSettings) {
 }
 
 function hasMeaningfulApiSettings(settings: AppSettings) {
-  return Boolean(
-    settings.customProviders.length ||
-    settings.profiles.some((profile) =>
-      profile.apiKey.trim() ||
-      profile.baseUrl !== DEFAULT_SETTINGS.baseUrl ||
-      profile.model !== DEFAULT_SETTINGS.model,
-    ),
-  )
+  return JSON.stringify(pickApiSettingsSnapshot(settings)) !== JSON.stringify(pickApiSettingsSnapshot(DEFAULT_SETTINGS))
 }
 
-function pickApiSettingsSnapshot(settings: AppSettings) {
+export function pickApiSettingsSnapshot(settings: AppSettings) {
   const normalized = normalizeSettings(settings)
   return {
     customProviders: normalized.customProviders,
@@ -176,12 +170,11 @@ function pickApiSettingsSnapshot(settings: AppSettings) {
   }
 }
 
-function hasApiSettingsConflict(local: AppSettings, incoming: AppSettings) {
+export function hasApiSettingsConflict(local: AppSettings, incoming: AppSettings) {
   return JSON.stringify(pickApiSettingsSnapshot(local)) !== JSON.stringify(pickApiSettingsSnapshot(incoming))
 }
 
 function setServerSettingsHydratedState(next: boolean) {
-  serverSettingsHydrated = next
   useStore.getState().setServerSettingsHydrated(next)
   if (next && autoSyncQueued && !isRemoteApplyActive()) {
     autoSyncQueued = false
@@ -358,16 +351,6 @@ function getRecordOnlyPull(changes: ReturnType<typeof getSyncChanges>) {
   }
 }
 
-function getThumbnailOnlyPull(changes: ReturnType<typeof getSyncChanges>) {
-  return {
-    settings: false,
-    tasks: [] as string[],
-    images: [] as string[],
-    thumbnails: changes.pull.thumbnails,
-    agentConversations: [] as string[],
-  }
-}
-
 async function collectLocalSyncState(): Promise<LocalSyncState> {
   const state = useStore.getState()
   const tasks = state.tasks.map((task) => ({ ...task, updatedAt: getTaskUpdatedAt(task) }))
@@ -429,7 +412,9 @@ async function createLocalPayload(local: LocalSyncState, changes: {
   }
   if (changes.taskIds?.length) {
     const ids = new Set(changes.taskIds)
-    payload.tasks = local.tasks.filter((task) => ids.has(task.id))
+    payload.tasks = local.tasks
+      .filter((task) => ids.has(task.id))
+      .map(getPersistableTask)
   }
   if (changes.agentConversationIds?.length) {
     const ids = new Set(changes.agentConversationIds)
@@ -460,8 +445,10 @@ function hasPayloadData(payload: SyncRecordPayload) {
   )
 }
 
-function bytesToUploadBody(bytes: Uint8Array) {
-  return Uint8Array.from(bytes)
+async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+  for (let start = 0; start < items.length; start += limit) {
+    await Promise.all(items.slice(start, start + limit).map(worker))
+  }
 }
 
 async function uploadImageBinary(image: StoredImage) {
@@ -476,7 +463,7 @@ async function uploadImageBinary(image: StoredImage) {
       'X-Image-Height': String(image.height ?? ''),
       'X-Image-Source': image.source ?? 'upload',
     },
-    body: bytesToUploadBody(bytes),
+    body: bytes.buffer as ArrayBuffer,
   })
 }
 
@@ -491,7 +478,7 @@ async function uploadThumbnailBinary(thumbnail: StoredImageThumbnail) {
       'X-Thumbnail-Height': String(thumbnail.height ?? ''),
       'X-Thumbnail-Version': String(thumbnail.thumbnailVersion ?? 1),
     },
-    body: bytesToUploadBody(bytes),
+    body: bytes.buffer as ArrayBuffer,
   })
 }
 
@@ -751,6 +738,50 @@ async function applyPartialSnapshot(snapshot: ServerSnapshot) {
   }
 }
 
+function formatRecordSyncStatus(completedTasks: number, totalTasks: number, syncingSettings: boolean) {
+  const taskProgress = totalTasks > 0 ? `正在同步：${completedTasks} / ${totalTasks}` : ''
+  if (syncingSettings) return taskProgress ? `正在同步设置 · ${taskProgress}` : '正在同步设置…'
+  return taskProgress || '同步记录中…'
+}
+
+async function pullRecordChangesProgressively(recordPull: ReturnType<typeof getRecordOnlyPull>) {
+  const totalTasks = recordPull.tasks.length
+  if (recordPull.settings || recordPull.agentConversations.length) {
+    setRecordSyncStatusText(formatRecordSyncStatus(0, totalTasks, recordPull.settings))
+    const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+      method: 'POST',
+      body: JSON.stringify({
+        settings: recordPull.settings,
+        tasks: [],
+        images: [],
+        thumbnails: [],
+        agentConversations: recordPull.agentConversations,
+      }),
+    })
+    await applyPartialSnapshot(snapshot)
+  }
+
+  if (totalTasks === 0) return
+
+  let completedTasks = 0
+  setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks, false))
+  for (const taskId of recordPull.tasks) {
+    const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+      method: 'POST',
+      body: JSON.stringify({
+        settings: false,
+        tasks: [taskId],
+        images: [],
+        thumbnails: [],
+        agentConversations: [],
+      }),
+    })
+    await applyPartialSnapshot(snapshot)
+    completedTasks += 1
+    setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks, false))
+  }
+}
+
 export async function loadServerSnapshot() {
   const snapshot = await serverApi<ServerSnapshot>('/api/sync/snapshot')
   await applyPartialSnapshot(snapshot)
@@ -772,8 +803,8 @@ export async function pushLocalDataToServer() {
     return { pushed: payload, changes: changes.push }
   }
 
-  for (const image of uploadedImages) await uploadImageBinary(image)
-  for (const thumbnail of uploadedThumbnails) await uploadThumbnailBinary(thumbnail)
+  await runWithConcurrency(uploadedImages, BINARY_UPLOAD_CONCURRENCY, uploadImageBinary)
+  await runWithConcurrency(uploadedThumbnails, BINARY_UPLOAD_CONCURRENCY, uploadThumbnailBinary)
 
   const pushedManifest = hasPayloadData(payload)
     ? await serverApi<ServerManifest>('/api/sync/push', {
@@ -836,21 +867,11 @@ export async function pullServerDataToLocal() {
     const local = await collectLocalSyncState()
     const changes = getSyncChanges(local, manifest)
     await applyManifestDeletions(changes)
-    const recordPull = { ...getRecordOnlyPull(changes), settings: Boolean(manifest.settings) }
-    const totalRecords = recordPull.tasks.length + recordPull.agentConversations.length + Number(recordPull.settings)
+    const recordPull = getRecordOnlyPull(changes)
     const hasRecordPull = recordPull.settings || recordPull.tasks.length || recordPull.agentConversations.length
     if (hasRecordPull) {
-      setRecordSyncStatusText(totalRecords > 0 ? `同步记录中（${totalRecords} 项）…` : '同步记录中…')
-      const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
-        method: 'POST',
-        body: JSON.stringify(recordPull),
-      })
-      await applyPartialSnapshot(snapshot)
-    }
-
-    const thumbnailPull = getThumbnailOnlyPull(changes)
-    if (thumbnailPull.thumbnails.length > 0) {
-      void pullSpecificThumbnailsToLocal(thumbnailPull.thumbnails)
+      setRecordSyncStatusText(formatRecordSyncStatus(0, recordPull.tasks.length, recordPull.settings))
+      await pullRecordChangesProgressively(recordPull)
     }
     return { pulled: changes.pull, deletions: changes.deletions }
   } finally {
@@ -866,7 +887,7 @@ export async function syncLocalDataToServer() {
 
 export function scheduleAutoSync(_reason = 'change') {
   if (typeof window === 'undefined' || isRemoteApplyActive()) return
-  if (!serverSettingsHydrated) {
+  if (!useStore.getState().serverSettingsHydrated) {
     autoSyncQueued = true
     return
   }
@@ -879,7 +900,7 @@ export function scheduleAutoSync(_reason = 'change') {
 
 export async function flushAutoSync() {
   if (typeof window === 'undefined' || isRemoteApplyActive()) return
-  if (!serverSettingsHydrated) {
+  if (!useStore.getState().serverSettingsHydrated) {
     autoSyncQueued = true
     return
   }
@@ -962,13 +983,11 @@ export async function bootstrapServerData() {
     const local = await collectLocalSyncState()
     const changes = getSyncChanges(local, manifest)
     await applyManifestDeletions(changes)
-    const recordPull = { ...getRecordOnlyPull(changes), settings: Boolean(manifest.settings) }
+    const recordPull = getRecordOnlyPull(changes)
     const hasRecordPull = recordPull.settings || recordPull.tasks.length || recordPull.agentConversations.length
     if (!hasRecordPull) {
       setServerSettingsSnapshot(manifest.settings ? local.settings : null, manifest.settings?.updatedAt ?? 0)
       setServerSettingsHydratedState(true)
-      const thumbnailPull = getThumbnailOnlyPull(changes)
-      if (thumbnailPull.thumbnails.length > 0) void pullSpecificThumbnailsToLocal(thumbnailPull.thumbnails)
       return snapshotHasData({
         settings: manifest.settings ? local.settings : null,
         settingsRevision: manifest.settings?.revision ?? 0,
@@ -980,17 +999,9 @@ export async function bootstrapServerData() {
       }) ? 'pulled' as const : 'empty' as const
     }
 
-    const totalRecords = recordPull.tasks.length + recordPull.agentConversations.length + Number(recordPull.settings)
-    setRecordSyncStatusText(totalRecords > 0 ? `同步记录中（${totalRecords} 项）…` : '同步记录中…')
-    const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
-      method: 'POST',
-      body: JSON.stringify(recordPull),
-    })
-    await applyPartialSnapshot(snapshot)
-
-    const thumbnailPull = getThumbnailOnlyPull(changes)
-    if (thumbnailPull.thumbnails.length > 0) void pullSpecificThumbnailsToLocal(thumbnailPull.thumbnails)
-    return snapshotHasData(snapshot) ? 'pulled' as const : 'empty' as const
+    setRecordSyncStatusText(recordPull.tasks.length > 0 ? `同步记录中（剩余 ${recordPull.tasks.length} 条）…` : '同步记录中…')
+    await pullRecordChangesProgressively(recordPull)
+    return 'pulled' as const
   } finally {
     setRecordSyncStatusText(null)
   }

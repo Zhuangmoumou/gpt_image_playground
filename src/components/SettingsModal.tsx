@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
-import { applyServerSettingsSnapshot, exportServerData, importServerData, pullServerDataToLocal, pushLocalDataToServer, writeLocalSettingsUpdatedAt } from '../lib/serverSync'
+import { applyServerSettingsSnapshot, exportServerData, hasApiSettingsConflict as hasApiSettingsDiff, importServerData, pickApiSettingsSnapshot, pullServerDataToLocal, pushLocalDataToServer, writeLocalSettingsUpdatedAt } from '../lib/serverSync'
 import { useStore, exportData, importData, clearData, clearOriginalImageCache, estimateClearableOriginalImageCacheBytes, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -51,35 +51,8 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
 }
 
-function pickApiSettingsSnapshot(settings: AppSettings) {
-  const normalized = normalizeSettings(settings)
-  return {
-    customProviders: normalized.customProviders,
-    providerOrder: normalized.providerOrder ?? [],
-    profiles: normalized.profiles.map((profile) => ({
-      id: profile.id,
-      name: profile.name,
-      provider: profile.provider,
-      baseUrl: profile.baseUrl,
-      apiKey: profile.apiKey,
-      model: profile.model,
-      timeout: profile.timeout,
-      apiMode: profile.apiMode,
-      codexCli: profile.codexCli,
-      apiProxy: profile.apiProxy,
-      responseFormatB64Json: profile.responseFormatB64Json ?? false,
-      streamImages: profile.streamImages ?? false,
-      streamPartialImages: profile.streamPartialImages ?? 0,
-      providerDrafts: profile.providerDrafts ?? {},
-    })),
-    activeProfileId: normalized.activeProfileId,
-    serverRequestMode: normalized.serverRequestMode,
-    serverBackgroundMode: normalized.serverBackgroundMode,
-  }
-}
-
-function hasApiSettingsDiff(local: AppSettings, remote: AppSettings) {
-  return JSON.stringify(pickApiSettingsSnapshot(local)) !== JSON.stringify(pickApiSettingsSnapshot(remote))
+function getApiSettingsDiffKey(local: AppSettings, remote: AppSettings) {
+  return JSON.stringify([pickApiSettingsSnapshot(local), pickApiSettingsSnapshot(remote)])
 }
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
@@ -440,6 +413,7 @@ export default function SettingsModal() {
     apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
 
   const wasSettingsOpenRef = useRef(false)
+  const dismissedServerApiDiffKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!showSettings) {
@@ -466,8 +440,27 @@ export default function SettingsModal() {
     setDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
     setAgentMaxToolRoundsInput(String(nextDraft.agentMaxToolRounds))
-    setShowServerApiDiff(Boolean(serverSettingsHydrated && serverSettingsSnapshot?.settings && hasApiSettingsDiff(normalizedSettings, serverSettingsSnapshot.settings)))
-  }, [apiProxyAvailable, apiProxyLocked, serverSettingsHydrated, serverSettingsSnapshot, showSettings, settings, reusedTaskApiProfileId])
+  }, [apiProxyAvailable, apiProxyLocked, showSettings, settings, reusedTaskApiProfileId])
+
+  useEffect(() => {
+    if (!showSettings) {
+      setShowServerApiDiff(false)
+      return
+    }
+    const remoteSettings = serverSettingsSnapshot?.settings
+    if (!serverSettingsHydrated || !remoteSettings) {
+      setShowServerApiDiff(false)
+      return
+    }
+    const normalizedSettings = normalizeSettings(settings)
+    if (!hasApiSettingsDiff(normalizedSettings, remoteSettings)) {
+      dismissedServerApiDiffKeyRef.current = null
+      setShowServerApiDiff(false)
+      return
+    }
+    const diffKey = getApiSettingsDiffKey(normalizedSettings, remoteSettings)
+    setShowServerApiDiff(dismissedServerApiDiffKeyRef.current !== diffKey)
+  }, [serverSettingsHydrated, serverSettingsSnapshot, showSettings, settings])
 
   useEffect(() => {
     if (!showSettings) return
@@ -759,13 +752,18 @@ export default function SettingsModal() {
   }
 
   const handleKeepLocalApiConfig = () => {
-    commitSettings(normalizeSettings(useStore.getState().settings))
+    const currentSettings = normalizeSettings(useStore.getState().settings)
+    if (serverSettingsSnapshot?.settings) {
+      dismissedServerApiDiffKeyRef.current = getApiSettingsDiffKey(currentSettings, serverSettingsSnapshot.settings)
+    }
+    commitSettings(currentSettings)
     setShowServerApiDiff(false)
     showToast('已保留本地 API 配置，并准备同步到服务端', 'success')
   }
 
   const handleUseServerApiConfig = () => {
     if (!serverSettingsSnapshot) return
+    dismissedServerApiDiffKeyRef.current = null
     applyServerSettingsSnapshot(serverSettingsSnapshot.settings, serverSettingsSnapshot.updatedAt)
     refreshDraftFromStore()
     setShowServerApiDiff(false)
@@ -1190,9 +1188,8 @@ export default function SettingsModal() {
     }
   }
 
-  const localCommittedSettings = normalizeSettings(settings)
-  const remoteCommittedSettings = serverSettingsSnapshot?.settings ? normalizeSettings(serverSettingsSnapshot.settings) : null
-  const localApiDiffText = JSON.stringify(pickApiSettingsSnapshot(localCommittedSettings), null, 2)
+  const remoteCommittedSettings = showServerApiDiff && serverSettingsSnapshot?.settings ? normalizeSettings(serverSettingsSnapshot.settings) : null
+  const localApiDiffText = showServerApiDiff ? JSON.stringify(pickApiSettingsSnapshot(settings), null, 2) : ''
   const remoteApiDiffText = remoteCommittedSettings ? JSON.stringify(pickApiSettingsSnapshot(remoteCommittedSettings), null, 2) : ''
 
   return (
@@ -1446,6 +1443,24 @@ export default function SettingsModal() {
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                     关闭后，不再持久化提示词和参考图，下次启动会使用空输入框。
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">启用滑动多选</span>
+                    <button
+                      type="button"
+                      onClick={() => commitSettings({ ...draft, enableTouchSwipeSelect: !draft.enableTouchSwipeSelect })}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.enableTouchSwipeSelect ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={draft.enableTouchSwipeSelect}
+                      aria-label="启用滑动多选"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.enableTouchSwipeSelect ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    仅影响触摸设备上的任务卡片左右滑动多选，不影响桌面端的鼠标框选。
                   </div>
                 </div>
                 <div className="block">
