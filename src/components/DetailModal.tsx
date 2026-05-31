@@ -133,7 +133,7 @@ export default function DetailModal() {
     setImageSrcs(initial)
     for (const id of ids) {
       if (initial[id]) continue
-      ensureImageCached(id).then((url) => {
+      ensureImageCached(id, true).then((url) => {
         if (!cancelled && url) setImageSrcs((prev) => ({ ...prev, [id]: url }))
       })
     }
@@ -167,7 +167,7 @@ export default function DetailModal() {
       if (cached) {
         setOutputImage(imageId, cached)
       } else {
-        ensureImageCached(imageId)
+        ensureImageCached(imageId, true)
           .then((dataUrl) => {
             if (dataUrl) setOutputImage(imageId, dataUrl)
           })

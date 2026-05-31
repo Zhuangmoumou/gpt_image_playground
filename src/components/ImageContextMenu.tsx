@@ -98,7 +98,7 @@ export default function ImageContextMenu() {
 
   const getOriginalImageSrc = async () => {
     if (!menuInfo.imageId) return menuInfo.src
-    return await ensureImageCached(menuInfo.imageId) ?? menuInfo.src
+    return await ensureImageCached(menuInfo.imageId, true) ?? menuInfo.src
   }
 
   const handleCopy = async (e: React.MouseEvent) => {

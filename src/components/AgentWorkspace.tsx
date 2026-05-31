@@ -61,7 +61,7 @@ function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string;
     let cancelled = false
 
     if (maskImageId) {
-      Promise.all([ensureImageCached(imageId), ensureImageCached(maskImageId)])
+      Promise.all([ensureImageCached(imageId, true), ensureImageCached(maskImageId, true)])
         .then(async ([baseUrl, maskUrl]) => {
           if (!baseUrl || !maskUrl) return baseUrl || ''
           return createMaskPreviewDataUrl(baseUrl, maskUrl)
@@ -80,7 +80,7 @@ function ChatImageThumb({ imageId, imageIndex, maskImageId }: { imageId: string;
       setSrc(cached)
       return () => { cancelled = true }
     }
-    ensureImageCached(imageId).then((url) => {
+    ensureImageCached(imageId, true).then((url) => {
       if (!cancelled && url) setSrc(url)
     })
     return () => { cancelled = true }
@@ -754,13 +754,13 @@ export default function AgentWorkspace() {
     const inputImages = await Promise.all(
       round.inputImageIds.map(async (id) => ({
         id,
-        dataUrl: await ensureImageCached(id) || '',
+        dataUrl: await ensureImageCached(id, true) || '',
       })),
     )
     setInputImages(inputImages)
     const maskTargetImageId = round.maskTargetImageId ?? (round.maskImageId ? round.inputImageIds[0] : null)
     if (maskTargetImageId && round.maskImageId && inputImages.some((img) => img.id === maskTargetImageId)) {
-      const maskDataUrl = await ensureImageCached(round.maskImageId)
+      const maskDataUrl = await ensureImageCached(round.maskImageId, true)
       if (maskDataUrl) {
         setMaskDraft({
           targetImageId: maskTargetImageId,

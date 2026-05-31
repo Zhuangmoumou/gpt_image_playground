@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth } from '../auth.js'
 import { db, jsonColumn } from '../db.js'
-import { getUserSettings, upsertUserSettings } from '../settings.js'
-import { readStorageBuffer, readStorageDataUrl, saveDataUrlIfMissing } from '../storage.js'
+import { getRawUserSettings, upsertUserSettings } from '../settings.js'
+import { readStorageBuffer, readStorageDataUrl, saveBufferIfMissing, saveCompressedThumbnailBuffer, saveDataUrlIfMissing } from '../storage.js'
 
 const storedImageSchema = z.object({
   id: z.string().min(1),
@@ -21,6 +21,17 @@ const storedImageSchema = z.object({
   }
 })
 
+const storedImageSyncSchema = z.object({
+  id: z.string().min(1),
+  createdAt: z.number().optional(),
+  updatedAt: z.number().optional(),
+  deletedAt: z.number().nullable().optional(),
+  syncState: z.string().optional(),
+  source: z.enum(['upload', 'generated', 'mask']).optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+}).passthrough()
+
 const thumbnailSchema = z.object({
   id: z.string().min(1),
   thumbnailDataUrl: z.string().startsWith('data:image/').optional(),
@@ -36,12 +47,31 @@ const thumbnailSchema = z.object({
   }
 })
 
+const thumbnailSyncSchema = z.object({
+  id: z.string().min(1),
+  updatedAt: z.number().optional(),
+  deletedAt: z.number().nullable().optional(),
+  syncState: z.string().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  thumbnailVersion: z.number().optional(),
+}).passthrough()
+
 const syncPayloadSchema = z.object({
   settings: z.unknown().optional(),
   settingsUpdatedAt: z.number().optional(),
   tasks: z.array(z.record(z.string(), z.unknown())).optional(),
   images: z.array(storedImageSchema).optional(),
   thumbnails: z.array(thumbnailSchema).optional(),
+  agentConversations: z.array(z.record(z.string(), z.unknown()).and(z.object({ id: z.string().min(1) }))).optional(),
+})
+
+const syncPushPayloadSchema = z.object({
+  settings: z.unknown().optional(),
+  settingsUpdatedAt: z.number().optional(),
+  tasks: z.array(z.record(z.string(), z.unknown())).optional(),
+  images: z.array(storedImageSyncSchema).optional(),
+  thumbnails: z.array(thumbnailSyncSchema).optional(),
   agentConversations: z.array(z.record(z.string(), z.unknown()).and(z.object({ id: z.string().min(1) }))).optional(),
 })
 
@@ -138,6 +168,41 @@ function placeholders(values: string[]) {
   return values.map(() => '?').join(', ')
 }
 
+function parseOptionalNumber(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parseRequiredBuffer(body: unknown) {
+  if (Buffer.isBuffer(body) && body.length > 0) return body
+  throw Object.assign(new Error('图片二进制内容为空'), { statusCode: 400 })
+}
+
+function parseImageBinaryHeaders(headers: Record<string, unknown>) {
+  const contentType = typeof headers['content-type'] === 'string' && headers['content-type'].startsWith('image/')
+    ? headers['content-type'].toLowerCase()
+    : 'application/octet-stream'
+  return {
+    mimeType: contentType,
+    createdAt: parseOptionalNumber(headers['x-image-created-at']),
+    updatedAt: parseOptionalNumber(headers['x-image-updated-at']),
+    width: parseOptionalNumber(headers['x-image-width']),
+    height: parseOptionalNumber(headers['x-image-height']),
+    source: headers['x-image-source'] === 'generated' || headers['x-image-source'] === 'mask' ? headers['x-image-source'] : 'upload' as const,
+  }
+}
+
+function parseThumbnailBinaryHeaders(headers: Record<string, unknown>) {
+  return {
+    updatedAt: parseOptionalNumber(headers['x-thumbnail-updated-at']),
+    width: parseOptionalNumber(headers['x-thumbnail-width']),
+    height: parseOptionalNumber(headers['x-thumbnail-height']),
+    thumbnailVersion: parseOptionalNumber(headers['x-thumbnail-version']) ?? 1,
+  }
+}
+
 function upsertTask(userId: string, task: Record<string, unknown>) {
   const id = String(task.id || '')
   if (!id) return
@@ -231,6 +296,86 @@ function upsertThumbnail(userId: string, thumbnail: z.infer<typeof thumbnailSche
 
   if (!thumbnail.thumbnailDataUrl) return
   const saved = saveDataUrlIfMissing(thumbnail.thumbnailDataUrl, 'thumbnails')
+  db.prepare(`
+    INSERT INTO thumbnails (image_id, user_id, storage_path, width, height, thumbnail_version, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, image_id) DO UPDATE SET
+      storage_path = excluded.storage_path,
+      width = excluded.width,
+      height = excluded.height,
+      thumbnail_version = excluded.thumbnail_version,
+      updated_at = excluded.updated_at
+  `).run(
+    thumbnail.id,
+    userId,
+    saved.storagePath,
+    thumbnail.width ?? null,
+    thumbnail.height ?? null,
+    thumbnail.thumbnailVersion ?? 1,
+    updatedAt,
+  )
+}
+
+function upsertImageBinary(userId: string, image: {
+  id: string
+  mimeType: string
+  buffer: Buffer
+  createdAt?: number
+  updatedAt?: number
+  width?: number
+  height?: number
+  source?: 'upload' | 'generated' | 'mask'
+}) {
+  const now = Date.now()
+  const updatedAt = image.updatedAt ?? image.createdAt ?? now
+  const existing = db.prepare('SELECT updated_at, deleted_at, created_at FROM images WHERE user_id = ? AND id = ?').get(userId, image.id) as { updated_at: number; deleted_at: number | null; created_at: number } | undefined
+  if (getRowVersion(existing) > updatedAt) return
+
+  const saved = saveBufferIfMissing(image.buffer, image.mimeType, 'images')
+  const createdAt = image.createdAt ?? existing?.created_at ?? updatedAt
+  db.prepare(`
+    INSERT INTO images (id, user_id, sha256, storage_path, mime_type, width, height, source, created_at, updated_at, deleted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(user_id, id) DO UPDATE SET
+      sha256 = excluded.sha256,
+      storage_path = excluded.storage_path,
+      mime_type = excluded.mime_type,
+      width = excluded.width,
+      height = excluded.height,
+      source = excluded.source,
+      updated_at = excluded.updated_at,
+      deleted_at = NULL
+  `).run(
+    image.id,
+    userId,
+    saved.sha256,
+    saved.storagePath,
+    saved.mimeType,
+    image.width ?? null,
+    image.height ?? null,
+    image.source ?? 'upload',
+    createdAt,
+    updatedAt,
+  )
+}
+
+async function upsertThumbnailBinary(userId: string, thumbnail: {
+  id: string
+  buffer: Buffer
+  updatedAt?: number
+  width?: number
+  height?: number
+  thumbnailVersion?: number
+}) {
+  const imageRow = db.prepare('SELECT deleted_at FROM images WHERE user_id = ? AND id = ?').get(userId, thumbnail.id) as { deleted_at: number | null } | undefined
+  if (!imageRow || imageRow.deleted_at != null) return
+
+  const now = Date.now()
+  const updatedAt = thumbnail.updatedAt ?? now
+  const existing = db.prepare('SELECT updated_at FROM thumbnails WHERE user_id = ? AND image_id = ?').get(userId, thumbnail.id) as { updated_at: number } | undefined
+  if ((existing?.updated_at ?? 0) > updatedAt) return
+
+  const saved = await saveCompressedThumbnailBuffer(thumbnail.buffer)
   db.prepare(`
     INSERT INTO thumbnails (image_id, user_id, storage_path, width, height, thumbnail_version, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -407,7 +552,7 @@ function getAgentConversations(userId: string, conversationIds?: string[]) {
 }
 
 function getSnapshot(userId: string) {
-  const settings = getUserSettings(userId)
+  const settings = getRawUserSettings(userId)
   return {
     settings: settings?.settings ?? null,
     settingsRevision: settings?.revision ?? 0,
@@ -421,7 +566,7 @@ function getSnapshot(userId: string) {
 }
 
 function getPartialSnapshot(userId: string, pull: z.infer<typeof syncPullSchema>) {
-  const settings = pull.settings ? getUserSettings(userId) : null
+  const settings = pull.settings ? getRawUserSettings(userId) : null
   return {
     settings: settings?.settings ?? null,
     settingsRevision: settings?.revision ?? 0,
@@ -435,6 +580,13 @@ function getPartialSnapshot(userId: string, pull: z.infer<typeof syncPullSchema>
 }
 
 export async function registerSyncRoutes(app: FastifyInstance) {
+  for (const contentType of ['application/octet-stream', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']) {
+    if (app.hasContentTypeParser(contentType)) continue
+    app.addContentTypeParser(contentType, { parseAs: 'buffer' }, (_request, body, done) => {
+      done(null, body)
+    })
+  }
+
   app.get('/api/sync/manifest', async (request, reply) => {
     const auth = await requireAuth(request, reply)
     return getSyncManifest(auth.user.id)
@@ -463,6 +615,15 @@ export async function registerSyncRoutes(app: FastifyInstance) {
     return reply.send(readStorageBuffer(row.storage_path))
   })
 
+  app.put('/api/sync/images/:id', async (request, reply) => {
+    const auth = await requireAuth(request, reply)
+    const params = z.object({ id: z.string().min(1) }).parse(request.params)
+    const buffer = parseRequiredBuffer(request.body)
+    const headers = parseImageBinaryHeaders(request.headers as Record<string, unknown>)
+    upsertImageBinary(auth.user.id, { id: params.id, buffer, ...headers })
+    return reply.code(204).send()
+  })
+
   app.get('/api/sync/thumbnails/:id', async (request, reply) => {
     const auth = await requireAuth(request, reply)
     const params = z.object({ id: z.string().min(1) }).parse(request.params)
@@ -486,6 +647,15 @@ export async function registerSyncRoutes(app: FastifyInstance) {
     return reply.send(readStorageBuffer(row.storage_path))
   })
 
+  app.put('/api/sync/thumbnails/:id', async (request, reply) => {
+    const auth = await requireAuth(request, reply)
+    const params = z.object({ id: z.string().min(1) }).parse(request.params)
+    const buffer = parseRequiredBuffer(request.body)
+    const headers = parseThumbnailBinaryHeaders(request.headers as Record<string, unknown>)
+    await upsertThumbnailBinary(auth.user.id, { id: params.id, buffer, ...headers })
+    return reply.code(204).send()
+  })
+
   app.get('/api/sync/snapshot', async (request, reply) => {
     const auth = await requireAuth(request, reply)
     return getSnapshot(auth.user.id)
@@ -506,7 +676,7 @@ export async function registerSyncRoutes(app: FastifyInstance) {
 
   app.post('/api/sync/push', async (request, reply) => {
     const auth = await requireAuth(request, reply)
-    const payload = syncPayloadSchema.parse(request.body)
+    const payload = syncPushPayloadSchema.parse(request.body)
     applySyncPayload(auth.user.id, payload)
     return getSyncManifest(auth.user.id)
   })

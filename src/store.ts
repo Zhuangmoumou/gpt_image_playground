@@ -13,6 +13,7 @@ import type {
   MaskDraft,
   TaskRecord,
   StoredImage,
+  StoredImageThumbnail,
   ExportData,
   ResponsesApiResponse,
   ResponsesOutputItem,
@@ -185,7 +186,7 @@ function cacheThumbnail(id: string, thumbnail: { dataUrl: string; width?: number
   }
 }
 
-export async function ensureImageCached(id: string): Promise<string | undefined> {
+export async function ensureImageCached(id: string, allowRemotePull = false): Promise<string | undefined> {
   const cached = getCachedImage(id)
   if (cached) return cached
   const rec = await getImage(id)
@@ -193,6 +194,7 @@ export async function ensureImageCached(id: string): Promise<string | undefined>
     cacheImage(id, rec.dataUrl)
     return rec.dataUrl
   }
+  if (!allowRemotePull) return undefined
   try {
     const response = await fetch(`/api/sync/images/${encodeURIComponent(id)}`, {
       credentials: 'same-origin',
@@ -267,6 +269,21 @@ export function subscribeImageThumbnail(id: string, callback: (thumbnail: { data
 
 function notifyImageThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number }) {
   thumbnailSubscribers.get(id)?.forEach((callback) => callback(thumbnail))
+}
+
+export function publishStoredThumbnail(thumbnail: StoredImageThumbnail) {
+  if (!thumbnail.thumbnailDataUrl) return
+  cacheThumbnail(thumbnail.id, {
+    dataUrl: thumbnail.thumbnailDataUrl,
+    width: thumbnail.width,
+    height: thumbnail.height,
+    thumbnailVersion: thumbnail.thumbnailVersion,
+  })
+  notifyImageThumbnail(thumbnail.id, {
+    dataUrl: thumbnail.thumbnailDataUrl,
+    width: thumbnail.width,
+    height: thumbnail.height,
+  })
 }
 
 function scheduleThumbnailBackfill(ids: Iterable<string>, priority: 'visible' | 'background' = 'background') {
@@ -844,7 +861,11 @@ interface AppState {
   setLightboxImageId: (id: string | null, list?: string[]) => void
   showSettings: boolean
   settingsTabRequest: SettingsTab | null
+  serverSettingsHydrated: boolean
+  serverSettingsSnapshot: { settings: AppSettings; updatedAt: number } | null
   setShowSettings: (v: boolean, tab?: SettingsTab) => void
+  setServerSettingsHydrated: (v: boolean) => void
+  setServerSettingsSnapshot: (snapshot: AppState['serverSettingsSnapshot']) => void
   supportPromptOpen: boolean
   supportPromptDismissed: boolean
   supportPromptSkippedForImportedData: boolean
@@ -1493,14 +1514,36 @@ export const useStore = create<AppState>()(
       },
       showSettings: false,
       settingsTabRequest: null,
+      serverSettingsHydrated: false,
+      serverSettingsSnapshot: null,
       setShowSettings: (showSettings, settingsTabRequest) => {
-        if (showSettings) dismissAllTooltips()
+        if (showSettings) {
+          dismissAllTooltips()
+          if (!get().serverSettingsHydrated) {
+            set({
+              confirmDialog: {
+                title: '服务端配置尚未下发',
+                message: '当前服务端配置还未同步到本地，现在打开设置可能看到不完整配置，或误把本地旧配置覆盖到服务端。确认后仍可继续打开。',
+                tone: 'warning',
+                confirmText: '继续打开',
+                cancelText: '稍后再说',
+                action: () => set({
+                  showSettings: true,
+                  ...(settingsTabRequest ? { settingsTabRequest } : {}),
+                }),
+              },
+            })
+            return
+          }
+        }
         set({
           showSettings,
           ...(settingsTabRequest ? { settingsTabRequest } : {}),
           ...(!showSettings ? { settingsTabRequest: null } : {}),
         })
       },
+      setServerSettingsHydrated: (serverSettingsHydrated) => set({ serverSettingsHydrated }),
+      setServerSettingsSnapshot: (serverSettingsSnapshot) => set({ serverSettingsSnapshot }),
       supportPromptOpen: false,
       supportPromptDismissed: false,
       supportPromptSkippedForImportedData: false,
@@ -2650,7 +2693,7 @@ async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
 async function readAgentImageDataUrls(ids: string[]) {
   const dataUrls: string[] = []
   for (const id of ids) {
-    const dataUrl = await ensureImageCached(id)
+    const dataUrl = await ensureImageCached(id, true)
     if (dataUrl) dataUrls.push(dataUrl)
   }
   return dataUrls
@@ -2683,7 +2726,7 @@ async function createAgentGeneratedImagesInputItem(round: AgentRound, tasks: Tas
       continue
     }
     for (const imageId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imageId)
+      const dataUrl = await ensureImageCached(imageId, true)
       if (dataUrl) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
@@ -2712,7 +2755,7 @@ async function createAgentBatchImagesInputItem(round: AgentRound, tasks: TaskRec
     const task = tasks.find((item) => item.id === taskId)
     if (!task || task.status !== 'done') continue
     for (const imgId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imgId)
+      const dataUrl = await ensureImageCached(imgId, true)
       if (dataUrl) {
         contentParts.push({ type: 'input_image', image_url: dataUrl })
       }
@@ -3458,7 +3501,7 @@ async function executeAgentRound(
     const round = conversation.rounds.find((item) => item.id === roundId)
     const userMessage = round ? conversation.messages.find((message) => message.id === round.userMessageId) : null
     if (!round || !userMessage) return
-    const maskDataUrl = round.maskImageId ? await ensureImageCached(round.maskImageId) : undefined
+    const maskDataUrl = round.maskImageId ? await ensureImageCached(round.maskImageId, true) : undefined
     if (round.maskImageId && !maskDataUrl) throw new Error('遮罩图片已不存在')
 
     const apiInput = await buildAgentApiInput(conversation, round, latestState.tasks)
@@ -3621,7 +3664,7 @@ async function executeAgentRound(
             const currentRefId = getAgentCurrentReferenceId(r, imgIdx)
             if (currentRefId === refId) {
               const imageId = r.inputImageIds[imgIdx]
-              const dataUrl = await ensureImageCached(imageId)
+              const dataUrl = await ensureImageCached(imageId, true)
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -3632,7 +3675,7 @@ async function executeAgentRound(
             if (generatedRefId === refId) {
               const imageId = outputImages[imgIdx]
               if (!imageId) continue
-              const dataUrl = await ensureImageCached(imageId)
+              const dataUrl = await ensureImageCached(imageId, true)
               if (dataUrl) dataUrls.push(dataUrl)
               imageIds.push(imageId)
             }
@@ -4191,13 +4234,13 @@ async function executeTask(taskId: string) {
     // 获取输入图片 data URLs
     const inputDataUrls: string[] = []
     for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
+      const dataUrl = await ensureImageCached(imgId, true)
       if (!dataUrl) throw new Error('输入图片已不存在')
       inputDataUrls.push(dataUrl)
     }
     let maskDataUrl: string | undefined
     if (task.maskImageId) {
-      maskDataUrl = await ensureImageCached(task.maskImageId)
+      maskDataUrl = await ensureImageCached(task.maskImageId, true)
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
 
@@ -4446,7 +4489,7 @@ export async function reuseConfig(task: TaskRecord) {
   // 恢复输入图片
   const imgs: InputImage[] = []
   for (const imgId of task.inputImageIds) {
-    const dataUrl = await ensureImageCached(imgId)
+    const dataUrl = await ensureImageCached(imgId, true)
     if (dataUrl) {
       imgs.push({ id: imgId, dataUrl })
     }
@@ -4455,7 +4498,7 @@ export async function reuseConfig(task: TaskRecord) {
   setPrompt(task.prompt)
   const maskTargetImageId = task.maskTargetImageId ?? (task.maskImageId ? task.inputImageIds[0] : null)
   if (maskTargetImageId && task.maskImageId && imgs.some((img) => img.id === maskTargetImageId)) {
-    const maskDataUrl = await ensureImageCached(task.maskImageId)
+    const maskDataUrl = await ensureImageCached(task.maskImageId, true)
     if (maskDataUrl) {
       setMaskDraft({
         targetImageId: maskTargetImageId,
@@ -4497,7 +4540,7 @@ export async function editOutputs(task: TaskRecord) {
   let added = 0
   for (const imgId of task.outputImages) {
     if (inputImages.find((i) => i.id === imgId)) continue
-    const dataUrl = await ensureImageCached(imgId)
+    const dataUrl = await ensureImageCached(imgId, true)
     if (dataUrl) {
       addInputImage({ id: imgId, dataUrl })
       added++
@@ -4557,6 +4600,21 @@ export async function removeTask(task: TaskRecord, syncToServer = false) {
   const { showToast } = useStore.getState()
   await markTasksDeleted([task.id], syncToServer)
   showToast(syncToServer ? '记录已标记，并将同步删除' : '记录已标记，可稍后决定是否同步删除', 'success')
+}
+
+function estimateDataUrlBytes(dataUrl: string) {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex < 0) return dataUrl.length
+  const base64 = dataUrl.slice(commaIndex + 1)
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
+}
+
+export async function estimateClearableOriginalImageCacheBytes() {
+  const images = await getAllImages()
+  return images
+    .filter((image) => image.syncState === 'synced' && !image.deletedAt && image.dataUrl)
+    .reduce((total, image) => total + estimateDataUrlBytes(image.dataUrl), 0)
 }
 
 export async function clearOriginalImageCache() {

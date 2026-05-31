@@ -52,7 +52,7 @@ export default function Lightbox() {
     if (cached) {
       setSrc(cached)
     } else {
-      ensureImageCached(imageId).then((url) => {
+      ensureImageCached(imageId, true).then((url) => {
         if (!cancelled && url) setSrc(url)
       })
     }
@@ -113,7 +113,7 @@ export default function Lightbox() {
       if (cached) {
         setMaskImageSrc(cached)
       } else {
-        ensureImageCached(maskImageId).then((url) => {
+        ensureImageCached(maskImageId, true).then((url) => {
           if (!cancelled && url) setMaskImageSrc(url)
         })
       }

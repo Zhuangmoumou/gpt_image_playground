@@ -453,6 +453,7 @@ describe('callImageApi', () => {
         apiKey: 'test-key',
         apiProxy: true,
         baseUrl: '',
+        serverRequestMode: false,
       },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
@@ -480,6 +481,7 @@ describe('callImageApi', () => {
         baseUrl: '',
         apiKey: 'test-key',
         apiProxy: true,
+        serverRequestMode: false,
         customProviders: [{
           id: 'custom-sync',
           name: 'Custom Sync',
@@ -524,6 +526,7 @@ describe('callImageApi', () => {
         baseUrl: '',
         apiKey: 'test-key',
         apiProxy: true,
+        serverRequestMode: false,
         customProviders: [{
           id: 'custom-async-proxy',
           name: 'Custom Async Proxy',

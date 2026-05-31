@@ -46,7 +46,7 @@ export async function downloadImageIds(imageIds: string[], fileNameBase = 'image
 async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
   let src = imageIdOrUrl
   if (!imageIdOrUrl.startsWith('data:') && !imageIdOrUrl.startsWith('http://') && !imageIdOrUrl.startsWith('https://')) {
-    src = await ensureImageCached(imageIdOrUrl) ?? imageIdOrUrl
+    src = await ensureImageCached(imageIdOrUrl, true) ?? imageIdOrUrl
   }
 
   const res = await fetch(src)

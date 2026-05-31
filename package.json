@@ -28,6 +28,7 @@
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "sharp": "^0.34.5",
     "streamdown": "^2.5.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.5"

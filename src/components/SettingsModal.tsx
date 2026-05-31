@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
-import { exportServerData, importServerData, pullServerDataToLocal, pushLocalDataToServer, writeLocalSettingsUpdatedAt } from '../lib/serverSync'
-import { useStore, exportData, importData, clearData, clearOriginalImageCache, type SettingsTab } from '../store'
+import { applyServerSettingsSnapshot, exportServerData, importServerData, pullServerDataToLocal, pushLocalDataToServer, writeLocalSettingsUpdatedAt } from '../lib/serverSync'
+import { useStore, exportData, importData, clearData, clearOriginalImageCache, estimateClearableOriginalImageCacheBytes, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
   DEFAULT_FAL_BASE_URL,
@@ -37,6 +37,49 @@ import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, GithubIcon, 
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
+function pickApiSettingsSnapshot(settings: AppSettings) {
+  const normalized = normalizeSettings(settings)
+  return {
+    customProviders: normalized.customProviders,
+    providerOrder: normalized.providerOrder ?? [],
+    profiles: normalized.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      provider: profile.provider,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+      model: profile.model,
+      timeout: profile.timeout,
+      apiMode: profile.apiMode,
+      codexCli: profile.codexCli,
+      apiProxy: profile.apiProxy,
+      responseFormatB64Json: profile.responseFormatB64Json ?? false,
+      streamImages: profile.streamImages ?? false,
+      streamPartialImages: profile.streamPartialImages ?? 0,
+      providerDrafts: profile.providerDrafts ?? {},
+    })),
+    activeProfileId: normalized.activeProfileId,
+    serverRequestMode: normalized.serverRequestMode,
+    serverBackgroundMode: normalized.serverBackgroundMode,
+  }
+}
+
+function hasApiSettingsDiff(local: AppSettings, remote: AppSettings) {
+  return JSON.stringify(pickApiSettingsSnapshot(local)) !== JSON.stringify(pickApiSettingsSnapshot(remote))
 }
 
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
@@ -292,6 +335,8 @@ export default function SettingsModal() {
   const setSettings = useStore((s) => s.setSettings)
   const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
   const setReusedTaskApiProfile = useStore((s) => s.setReusedTaskApiProfile)
+  const serverSettingsHydrated = useStore((s) => s.serverSettingsHydrated)
+  const serverSettingsSnapshot = useStore((s) => s.serverSettingsSnapshot)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -328,6 +373,8 @@ export default function SettingsModal() {
   const [isSyncingToServer, setIsSyncingToServer] = useState(false)
   const [isSyncingToClient, setIsSyncingToClient] = useState(false)
   const [isImportingJson, setIsImportingJson] = useState(false)
+  const [clearCacheBytes, setClearCacheBytes] = useState<number | null>(null)
+  const [showServerApiDiff, setShowServerApiDiff] = useState(false)
   const [draggedProfileId, setDraggedProfileId] = useState<string | null>(null)
   const [dragOverProfileId, setDragOverProfileId] = useState<string | null>(null)
   const [dragDropPosition, setDragDropPosition] = useState<'before' | 'after' | null>(null)
@@ -397,6 +444,7 @@ export default function SettingsModal() {
   useEffect(() => {
     if (!showSettings) {
       wasSettingsOpenRef.current = false
+      setShowServerApiDiff(false)
       return
     }
     if (wasSettingsOpenRef.current) return
@@ -418,7 +466,21 @@ export default function SettingsModal() {
     setDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
     setAgentMaxToolRoundsInput(String(nextDraft.agentMaxToolRounds))
-  }, [apiProxyAvailable, apiProxyLocked, showSettings, settings, reusedTaskApiProfileId])
+    setShowServerApiDiff(Boolean(serverSettingsHydrated && serverSettingsSnapshot?.settings && hasApiSettingsDiff(normalizedSettings, serverSettingsSnapshot.settings)))
+  }, [apiProxyAvailable, apiProxyLocked, serverSettingsHydrated, serverSettingsSnapshot, showSettings, settings, reusedTaskApiProfileId])
+
+  useEffect(() => {
+    if (!showSettings) return
+    let cancelled = false
+    void estimateClearableOriginalImageCacheBytes().then((bytes) => {
+      if (!cancelled) setClearCacheBytes(bytes)
+    }).catch(() => {
+      if (!cancelled) setClearCacheBytes(null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [showSettings])
 
   useEffect(() => {
     setTimeoutInput(String(activeProfile.timeout))
@@ -503,15 +565,11 @@ export default function SettingsModal() {
   const normalizeDraftSettingsForSave = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
       const nextApiProxy = isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false
-      const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
-      const normalizedBaseUrl = profile.provider === 'fal'
-        ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-        : shouldKeepEmptyBaseUrl ? '' : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
       const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
       return {
         ...profile,
         name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
-        baseUrl: normalizedBaseUrl,
+        baseUrl: profile.baseUrl,
         model: profile.model.trim() || defaultModel,
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
         apiProxy: nextApiProxy,
@@ -681,7 +739,7 @@ export default function SettingsModal() {
   const handleSaveApiSettings = () => {
     commitSettings(getCommittedDraft())
     setShowProfileMenu(false)
-    showToast('API 配置已保存到当前浏览器，可使用同步按钮上传到服务端', 'success')
+    showToast('API 配置已保存，并将自动同步到服务端', 'success')
   }
 
   useCloseOnEscape(showSettings, handleClose)
@@ -694,6 +752,24 @@ export default function SettingsModal() {
     setDraft(nextDraft)
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
     setShowProfileMenu(false)
+  }
+
+  const refreshClearCacheBytes = async () => {
+    setClearCacheBytes(await estimateClearableOriginalImageCacheBytes())
+  }
+
+  const handleKeepLocalApiConfig = () => {
+    commitSettings(normalizeSettings(useStore.getState().settings))
+    setShowServerApiDiff(false)
+    showToast('已保留本地 API 配置，并准备同步到服务端', 'success')
+  }
+
+  const handleUseServerApiConfig = () => {
+    if (!serverSettingsSnapshot) return
+    applyServerSettingsSnapshot(serverSettingsSnapshot.settings, serverSettingsSnapshot.updatedAt)
+    refreshDraftFromStore()
+    setShowServerApiDiff(false)
+    showToast('已采用服务端保存的 API 配置', 'success')
   }
 
   const handleSyncToServer = async () => {
@@ -1114,8 +1190,13 @@ export default function SettingsModal() {
     }
   }
 
+  const localCommittedSettings = normalizeSettings(settings)
+  const remoteCommittedSettings = serverSettingsSnapshot?.settings ? normalizeSettings(serverSettingsSnapshot.settings) : null
+  const localApiDiffText = JSON.stringify(pickApiSettingsSnapshot(localCommittedSettings), null, 2)
+  const remoteApiDiffText = remoteCommittedSettings ? JSON.stringify(pickApiSettingsSnapshot(remoteCommittedSettings), null, 2) : ''
+
   return (
-        <div data-no-drag-select className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div data-no-drag-select className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/30 backdrop-blur-sm animate-overlay-in"
         onClick={handleClose}
@@ -1145,7 +1226,42 @@ export default function SettingsModal() {
           </div>
         </div>
 
-        <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+        {showServerApiDiff && remoteCommittedSettings && (
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6 custom-scrollbar border-b border-gray-100 dark:border-white/[0.08]">
+            <div className="mx-auto max-w-5xl space-y-5">
+              <div className="rounded-2xl border border-amber-200/70 bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-100">
+                检测到本地 API 配置与服务端保存配置存在差异。请选择保留当前浏览器里的配置，还是切换为服务端保存的完整预设配置。
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl border border-gray-200/70 bg-white/80 p-4 dark:border-white/[0.08] dark:bg-white/[0.03]">
+                  <div className="mb-2 text-sm font-bold text-gray-800 dark:text-gray-100">当前本地配置</div>
+                  <pre className="max-h-[360px] overflow-auto rounded-xl bg-gray-50/80 p-3 text-[11px] leading-5 text-gray-700 dark:bg-white/[0.04] dark:text-gray-200 custom-scrollbar">{localApiDiffText}</pre>
+                </div>
+                <div className="rounded-2xl border border-blue-200/70 bg-blue-50/60 p-4 dark:border-blue-500/20 dark:bg-blue-500/10">
+                  <div className="mb-2 text-sm font-bold text-gray-800 dark:text-gray-100">服务端保存配置</div>
+                  <pre className="max-h-[360px] overflow-auto rounded-xl bg-white/80 p-3 text-[11px] leading-5 text-gray-700 dark:bg-white/[0.05] dark:text-gray-200 custom-scrollbar">{remoteApiDiffText}</pre>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={handleKeepLocalApiConfig}
+                  className="rounded-xl border border-gray-200/70 bg-white/90 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-white dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-gray-200 dark:hover:bg-white/[0.08]"
+                >
+                  保留本地已有配置
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUseServerApiConfig}
+                  className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-500"
+                >
+                  采用服务端保存配置
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className={`${showServerApiDiff ? 'hidden' : 'flex'} flex-1 min-h-0 flex-col sm:flex-row`}>
           {/* Sidebar */}
           <div className="w-full sm:w-48 shrink-0 flex flex-col border-b sm:border-b-0 sm:border-r border-gray-100 dark:border-white/[0.08] bg-gray-50/50 dark:bg-white/[0.02]">
             <nav className="flex-1 overflow-x-auto sm:overflow-y-auto custom-scrollbar p-3 space-x-1 sm:space-x-0 sm:space-y-1 flex sm:flex-col">
@@ -1697,7 +1813,7 @@ export default function SettingsModal() {
                   <span className="block text-sm text-gray-600 dark:text-gray-300">服务端发出请求</span>
                   <button
                     type="button"
-                    onClick={() => updateDraftOnly({ ...draft, serverRequestMode: !draft.serverRequestMode })}
+                    onClick={() => commitSettings({ ...draft, serverRequestMode: !draft.serverRequestMode })}
                     className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                     role="switch"
                     aria-checked={draft.serverRequestMode}
@@ -1716,7 +1832,7 @@ export default function SettingsModal() {
                   <span className="block text-sm text-gray-600 dark:text-gray-300">抗中断后台生成</span>
                   <button
                     type="button"
-                    onClick={() => updateDraftOnly({ ...draft, serverBackgroundMode: !draft.serverBackgroundMode })}
+                    onClick={() => commitSettings({ ...draft, serverBackgroundMode: !draft.serverBackgroundMode })}
                     disabled={!draft.serverRequestMode}
                     className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.serverRequestMode && draft.serverBackgroundMode ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${!draft.serverRequestMode ? 'cursor-not-allowed opacity-60' : ''}`}
                     role="switch"
@@ -1983,13 +2099,17 @@ export default function SettingsModal() {
                   <div>
                     <h4 className="text-sm font-bold text-gray-800 dark:text-gray-100">清除原图缓存</h4>
                     <div data-selectable-text className="mt-1 text-xs text-gray-500 dark:text-gray-400">只删除浏览器里的原图缓存，保留记录和缩略图。再次打开详情、灯箱或编辑时，会按需把原图重新拉回来；未同步到服务端的原图不会被清理。</div>
+                    <div className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">当前可清理原图缓存：{clearCacheBytes == null ? '统计中…' : formatBytes(clearCacheBytes)}</div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setConfirmDialog({
                       title: '清除原图缓存',
-                      message: '确定要删除当前浏览器中已同步的原图缓存吗？会保留缩略图，后续需要原图时会自动重新下载。',
-                      action: () => clearOriginalImageCache(),
+                      message: `确定要删除当前浏览器中已同步的原图缓存吗？当前可清理约 ${clearCacheBytes == null ? '—' : formatBytes(clearCacheBytes)}，会保留缩略图，后续需要原图时会自动重新下载。`,
+                      action: async () => {
+                        await clearOriginalImageCache()
+                        await refreshClearCacheBytes()
+                      },
                     })}
                     className="w-full rounded-xl border border-amber-200/70 bg-white/80 px-4 py-2.5 text-sm font-medium text-amber-700 transition hover:bg-white dark:border-amber-500/25 dark:bg-white/[0.06] dark:text-amber-300 dark:hover:bg-white/[0.1]"
                   >

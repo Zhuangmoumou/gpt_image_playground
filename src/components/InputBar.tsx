@@ -1220,7 +1220,7 @@ export default function InputBar() {
 
       if (imageIds.length > 0) {
         Promise.all(imageIds.map(async (imageId) => {
-          const dataUrl = await ensureImageCached(imageId)
+          const dataUrl = await ensureImageCached(imageId, true)
           if (!dataUrl) {
             showToast('部分图片已不存在', 'error')
             return
