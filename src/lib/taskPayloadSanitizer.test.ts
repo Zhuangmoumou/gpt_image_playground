@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ResponsesOutputItem } from '../types'
-import { getPersistableResponseOutputItem, getPersistableTask } from './taskPayloadSanitizer'
+import type { AgentConversation, ResponsesOutputItem } from '../types'
+import { getPersistableAgentConversation, getPersistableResponseOutputItem, getPersistableTask } from './taskPayloadSanitizer'
 
 describe('taskPayloadSanitizer', () => {
   it('removes string image generation results from response output items', () => {
@@ -56,6 +56,41 @@ describe('taskPayloadSanitizer', () => {
         { type: 'message', content: [{ type: 'output_text', text: 'ok' }] },
         { type: 'image_generation_call', id: 'img_1', size: '1024x1024' },
       ],
+    })
+  })
+
+  it('sanitizes responseOutput on agent conversations', () => {
+    const conversation = {
+      id: 'conv_1',
+      title: 'Test',
+      createdAt: 1,
+      updatedAt: 2,
+      rounds: [{
+        id: 'round_1',
+        index: 0,
+        userMessageId: 'msg_1',
+        prompt: 'prompt',
+        inputImageIds: [],
+        outputTaskIds: [],
+        responseOutput: [{
+          type: 'image_generation_call',
+          id: 'img_1',
+          result: { b64_json: 'large-base64' },
+          size: '1024x1024',
+        }],
+        status: 'done',
+        error: null,
+        createdAt: 1,
+        finishedAt: 2,
+      }],
+      messages: [],
+    } as AgentConversation
+
+    const sanitized = getPersistableAgentConversation(conversation)
+    expect(sanitized.rounds[0]?.responseOutput?.[0]).toEqual({
+      type: 'image_generation_call',
+      id: 'img_1',
+      size: '1024x1024',
     })
   })
 })

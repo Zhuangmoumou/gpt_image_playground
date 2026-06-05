@@ -2,7 +2,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import type { AgentConversation, AppSettings, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from '../types'
 import { publishStoredThumbnail, useStore } from '../store'
 import { DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
-import { getPersistableTask } from './taskPayloadSanitizer'
+import { getPersistableAgentConversation, getPersistableTask } from './taskPayloadSanitizer'
 import {
   deleteAgentConversation,
   deleteImage,
@@ -418,7 +418,9 @@ async function createLocalPayload(local: LocalSyncState, changes: {
   }
   if (changes.agentConversationIds?.length) {
     const ids = new Set(changes.agentConversationIds)
-    payload.agentConversations = local.agentConversations.filter((conversation) => ids.has(conversation.id))
+    payload.agentConversations = local.agentConversations
+      .filter((conversation) => ids.has(conversation.id))
+      .map(getPersistableAgentConversation)
   }
   if (changes.imageIds?.length) {
     const ids = new Set(changes.imageIds)
@@ -738,47 +740,70 @@ async function applyPartialSnapshot(snapshot: ServerSnapshot) {
   }
 }
 
-function formatRecordSyncStatus(completedTasks: number, totalTasks: number, syncingSettings: boolean) {
-  const taskProgress = totalTasks > 0 ? `正在同步：${completedTasks} / ${totalTasks}` : ''
-  if (syncingSettings) return taskProgress ? `正在同步设置 · ${taskProgress}` : '正在同步设置…'
-  return taskProgress || '同步记录中…'
+function formatRecordSyncStatus(completedTasks: number, totalTasks: number) {
+  return totalTasks > 0 ? `正在同步：${completedTasks} / ${totalTasks}` : '同步记录中…'
+}
+
+function formatConversationSyncStatus(completedConversations: number, totalConversations: number) {
+  return totalConversations > 0 ? `正在同步对话：${completedConversations} / ${totalConversations}` : '同步对话中…'
 }
 
 async function pullRecordChangesProgressively(recordPull: ReturnType<typeof getRecordOnlyPull>) {
-  const totalTasks = recordPull.tasks.length
-  if (recordPull.settings || recordPull.agentConversations.length) {
-    setRecordSyncStatusText(formatRecordSyncStatus(0, totalTasks, recordPull.settings))
+  if (recordPull.settings) {
+    setRecordSyncStatusText('正在同步设置…')
     const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
       method: 'POST',
       body: JSON.stringify({
-        settings: recordPull.settings,
+        settings: true,
         tasks: [],
-        images: [],
-        thumbnails: [],
-        agentConversations: recordPull.agentConversations,
-      }),
-    })
-    await applyPartialSnapshot(snapshot)
-  }
-
-  if (totalTasks === 0) return
-
-  let completedTasks = 0
-  setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks, false))
-  for (const taskId of recordPull.tasks) {
-    const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
-      method: 'POST',
-      body: JSON.stringify({
-        settings: false,
-        tasks: [taskId],
         images: [],
         thumbnails: [],
         agentConversations: [],
       }),
     })
     await applyPartialSnapshot(snapshot)
-    completedTasks += 1
-    setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks, false))
+  }
+
+  const totalTasks = recordPull.tasks.length
+  if (totalTasks > 0) {
+    let completedTasks = 0
+    setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks))
+    for (const taskId of recordPull.tasks) {
+      const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+        method: 'POST',
+        body: JSON.stringify({
+          settings: false,
+          tasks: [taskId],
+          images: [],
+          thumbnails: [],
+          agentConversations: [],
+        }),
+      })
+      await applyPartialSnapshot(snapshot)
+      completedTasks += 1
+      setRecordSyncStatusText(formatRecordSyncStatus(completedTasks, totalTasks))
+    }
+  }
+
+  const totalConversations = recordPull.agentConversations.length
+  if (totalConversations > 0) {
+    let completedConversations = 0
+    setRecordSyncStatusText(formatConversationSyncStatus(completedConversations, totalConversations))
+    for (const conversationId of recordPull.agentConversations) {
+      const snapshot = await serverApi<ServerSnapshot>('/api/sync/pull', {
+        method: 'POST',
+        body: JSON.stringify({
+          settings: false,
+          tasks: [],
+          images: [],
+          thumbnails: [],
+          agentConversations: [conversationId],
+        }),
+      })
+      await applyPartialSnapshot(snapshot)
+      completedConversations += 1
+      setRecordSyncStatusText(formatConversationSyncStatus(completedConversations, totalConversations))
+    }
   }
 }
 
@@ -870,7 +895,7 @@ export async function pullServerDataToLocal() {
     const recordPull = getRecordOnlyPull(changes)
     const hasRecordPull = recordPull.settings || recordPull.tasks.length || recordPull.agentConversations.length
     if (hasRecordPull) {
-      setRecordSyncStatusText(formatRecordSyncStatus(0, recordPull.tasks.length, recordPull.settings))
+      setRecordSyncStatusText(recordPull.settings ? '正在同步设置…' : formatRecordSyncStatus(0, recordPull.tasks.length))
       await pullRecordChangesProgressively(recordPull)
     }
     return { pulled: changes.pull, deletions: changes.deletions }
@@ -999,7 +1024,7 @@ export async function bootstrapServerData() {
       }) ? 'pulled' as const : 'empty' as const
     }
 
-    setRecordSyncStatusText(recordPull.tasks.length > 0 ? `同步记录中（剩余 ${recordPull.tasks.length} 条）…` : '同步记录中…')
+    setRecordSyncStatusText(recordPull.settings ? '正在同步设置…' : formatRecordSyncStatus(0, recordPull.tasks.length))
     await pullRecordChangesProgressively(recordPull)
     return 'pulled' as const
   } finally {

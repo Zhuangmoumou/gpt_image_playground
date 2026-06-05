@@ -4,7 +4,7 @@ import { requireAuth } from '../auth.js'
 import { db, jsonColumn } from '../db.js'
 import { getRawUserSettings, upsertUserSettings } from '../settings.js'
 import { readStorageBuffer, readStorageDataUrl, saveBufferIfMissing, saveCompressedThumbnailBuffer, saveDataUrlIfMissing } from '../storage.js'
-import { getPersistableTask } from '../../src/lib/taskPayloadSanitizer.js'
+import { getPersistableAgentConversation, getPersistableTask } from '../../src/lib/taskPayloadSanitizer.js'
 
 const storedImageSchema = z.object({
   id: z.string().min(1),
@@ -138,6 +138,7 @@ interface ManifestThumbnailRow {
 }
 
 interface ConversationRow {
+  id: string
   conversation_json: string
 }
 
@@ -414,6 +415,7 @@ function upsertConversation(userId: string, conversation: Record<string, unknown
   const createdAt = typeof conversation.createdAt === 'number' ? conversation.createdAt : now
   const updatedAt = getRecordUpdatedAt(conversation, now)
   const deletedAt = getDeletedAt(conversation)
+  const storedConversation = getPersistableAgentConversation({ ...conversation, updatedAt, deletedAt, syncState: 'synced' })
   const existing = db.prepare('SELECT revision, updated_at, deleted_at FROM agent_conversations WHERE user_id = ? AND id = ?').get(userId, conversation.id) as { revision: number; updated_at: number; deleted_at: number | null } | undefined
   if (getRowVersion(existing) > getIncomingVersion(updatedAt, deletedAt)) return
 
@@ -428,7 +430,7 @@ function upsertConversation(userId: string, conversation: Record<string, unknown
   `).run(
     conversation.id,
     userId,
-    JSON.stringify({ ...conversation, updatedAt, deletedAt, syncState: 'synced' }),
+    JSON.stringify(storedConversation),
     (existing?.revision ?? 0) + 1,
     createdAt,
     updatedAt,
@@ -560,16 +562,25 @@ function getAgentConversations(userId: string, conversationIds?: string[]) {
   const selectedIds = ids(conversationIds)
   if (conversationIds && selectedIds.length === 0) return []
   const query = selectedIds.length
-    ? `SELECT conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY updated_at DESC`
-    : 'SELECT conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC'
+    ? `SELECT id, conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY updated_at DESC`
+    : 'SELECT id, conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC'
   return (db.prepare(query).all(userId, ...selectedIds) as ConversationRow[])
     .map((row) => {
       const conversation = jsonColumn<Record<string, unknown>>(row.conversation_json, {})
-      return {
+      const nextConversation = getPersistableAgentConversation({
         ...conversation,
         deletedAt: null,
         syncState: 'synced',
+      })
+      const nextJson = JSON.stringify(nextConversation)
+      if (nextJson !== row.conversation_json) {
+        try {
+          db.prepare('UPDATE agent_conversations SET conversation_json = ? WHERE user_id = ? AND id = ?').run(nextJson, userId, row.id)
+        } catch {
+          // 旧对话清理是性能优化，失败不影响本次返回已清理的记录。
+        }
       }
+      return nextConversation
     })
 }
 

@@ -55,7 +55,7 @@ import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { getPersistableResponseOutputItem, getPersistableTask } from './lib/taskPayloadSanitizer'
+import { getPersistableAgentConversation, getPersistableAgentConversations, getPersistableResponseOutputItem, getPersistableTask } from './lib/taskPayloadSanitizer'
 
 // ===== Image cache =====
 // 内存缓存，id → dataUrl。只保留少量最近使用图片，避免大量 4K data URL 常驻内存。
@@ -574,19 +574,6 @@ function mergeAgentConversationsForStorage(stored: AgentConversation[], legacy: 
   return [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
 }
 
-function getPersistableAgentConversations(conversations: AgentConversation[]): AgentConversation[] {
-  return conversations.map((conversation) => ({
-    ...conversation,
-    rounds: conversation.rounds.map((round) => round.responseOutput?.length
-      ? {
-          ...round,
-          responseOutput: round.responseOutput.map(getPersistableResponseOutputItem),
-        }
-      : round,
-    ),
-  }))
-}
-
 function stripPersistedAgentConversations(value: unknown): unknown {
   if (!Array.isArray(value)) return value
   return value.map((conversation) => {
@@ -680,10 +667,6 @@ export function getPersistedState(state: AppState) {
 
 async function replaceStoredAgentConversations(conversations: AgentConversation[]) {
   await replaceAgentConversations(conversations.map(getPersistableAgentConversation))
-}
-
-function getPersistableAgentConversation(conversation: AgentConversation): AgentConversation {
-  return getPersistableAgentConversations([conversation])[0]!
 }
 
 function mergePersistedState(persistedState: unknown, currentState: AppState): AppState {

@@ -1,4 +1,4 @@
-import type { ResponsesOutputItem } from '../types'
+import type { AgentConversation, ResponsesOutputItem } from '../types'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -39,4 +39,20 @@ export function getPersistableRawResponsePayload(rawResponsePayload?: unknown) {
 export function getPersistableTask<T extends { rawResponsePayload?: unknown }>(task: T): T {
   const rawResponsePayload = getPersistableRawResponsePayload(task.rawResponsePayload)
   return rawResponsePayload === task.rawResponsePayload ? task : { ...task, rawResponsePayload }
+}
+
+export function getPersistableAgentConversation<T extends Pick<AgentConversation, 'rounds'>>(conversation: T): T {
+  const rounds = conversation.rounds.map((round) => round.responseOutput?.length
+    ? {
+        ...round,
+        responseOutput: round.responseOutput.map(getPersistableResponseOutputItem),
+      }
+    : round,
+  )
+  const changed = rounds.some((round, index) => round !== conversation.rounds[index])
+  return changed ? { ...conversation, rounds } : conversation
+}
+
+export function getPersistableAgentConversations<T extends Pick<AgentConversation, 'rounds'>>(conversations: T[]): T[] {
+  return conversations.map(getPersistableAgentConversation)
 }
