@@ -1,6 +1,6 @@
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import type { AgentConversation, AppSettings, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from '../types'
-import { publishStoredThumbnail, useStore } from '../store'
+import { publishStoredThumbnail, resumeServerGenerationPolling, useStore } from '../store'
 import { DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { getPersistableAgentConversation, getPersistableTask } from './taskPayloadSanitizer'
 import {
@@ -738,6 +738,7 @@ async function applyPartialSnapshot(snapshot: ServerSnapshot) {
   } finally {
     endRemoteApply()
   }
+  resumeServerGenerationPolling()
 }
 
 function formatRecordSyncStatus(completedTasks: number, totalTasks: number) {

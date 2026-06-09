@@ -9,7 +9,7 @@ export interface GenerationJob<T = unknown> {
   id: string
   kind: GenerationJobKind
   status: GenerationJobStatus
-  result: T | null
+  result: (T & { rawResponsePayload?: string }) | null
   error: string | null
   createdAt: number
   updatedAt: number

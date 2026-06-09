@@ -68,7 +68,10 @@ function dataUrlToBlob(dataUrl: string, fallbackType = 'image/png') {
 
 async function imageUrlToDataUrl(url: string, fallbackMime: string) {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`下载结果图片失败：${response.status}`)
+  if (!response.ok) {
+    const responseText = await response.text().catch(() => '')
+    throw Object.assign(new Error(`下载结果图片失败：${response.status}`), { statusCode: response.status, rawResponsePayload: responseText || null })
+  }
   const mime = response.headers.get('Content-Type') || fallbackMime
   const bytes = Buffer.from(await response.arrayBuffer())
   return `data:${mime};base64,${bytes.toString('base64')}`
@@ -81,6 +84,12 @@ function normalizeBase64Image(value: string, fallbackMime: string) {
 function getStringValue(source: Record<string, unknown>, key: string): string | undefined {
   const value = source[key]
   return typeof value === 'string' && value ? value : undefined
+}
+
+function getErrorRawResponsePayload(err: unknown) {
+  if (!err || typeof err !== 'object' || !('rawResponsePayload' in err)) return null
+  const rawResponsePayload = (err as { rawResponsePayload?: unknown }).rawResponsePayload
+  return typeof rawResponsePayload === 'string' && rawResponsePayload ? rawResponsePayload : null
 }
 
 function pickActualParams(source: unknown) {
@@ -230,7 +239,7 @@ async function performResponsesImageRequest(userId: string, profile: Record<stri
       : responseText || `服务端请求失败：${response.status}`
     throw Object.assign(new Error(message), { statusCode: response.status, rawResponsePayload: responseText || null })
   }
-  if (!payload) throw Object.assign(new Error('Responses API 未返回 JSON 响应'), { statusCode: 502 })
+  if (!payload) throw Object.assign(new Error('Responses API 未返回 JSON 响应'), { statusCode: 502, rawResponsePayload: responseText || null })
   const imageResults = parseResponsesImageResults(payload, fallbackMime)
   return {
     images: imageResults.map((result) => result.image),
@@ -342,9 +351,9 @@ async function performResponsesJob(userId: string, requestBody: unknown) {
     const message = payload && typeof payload === 'object' && 'error' in payload
       ? JSON.stringify((payload as { error: unknown }).error)
       : responseText || `服务端请求失败：${response.status}`
-    throw Object.assign(new Error(message), { statusCode: response.status })
+    throw Object.assign(new Error(message), { statusCode: response.status, rawResponsePayload: responseText || null })
   }
-  if (!payload) throw Object.assign(new Error('Agent 接口未返回 JSON 响应'), { statusCode: 502 })
+  if (!payload) throw Object.assign(new Error('Agent 接口未返回 JSON 响应'), { statusCode: 502, rawResponsePayload: responseText || null })
 
   const outputFormat = typeof body.body.output_format === 'string' ? body.body.output_format : ''
   const fallbackMime = outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png'
@@ -395,8 +404,10 @@ async function runGenerationJob(jobId: string, userId: string) {
       .run('done', JSON.stringify(result), finishedAt, finishedAt, jobId, userId)
   } catch (err) {
     const finishedAt = Date.now()
-    db.prepare('UPDATE generation_jobs SET status = ?, error_text = ?, updated_at = ?, finished_at = ? WHERE id = ? AND user_id = ?')
-      .run('error', err instanceof Error ? err.message : String(err), finishedAt, finishedAt, jobId, userId)
+    const rawResponsePayload = getErrorRawResponsePayload(err)
+    const resultJson = rawResponsePayload ? JSON.stringify({ rawResponsePayload }) : null
+    db.prepare('UPDATE generation_jobs SET status = ?, result_json = ?, error_text = ?, updated_at = ?, finished_at = ? WHERE id = ? AND user_id = ?')
+      .run('error', resultJson, err instanceof Error ? err.message : String(err), finishedAt, finishedAt, jobId, userId)
   }
 }
 

@@ -1602,6 +1602,10 @@ function isRunningOpenAITask(task: TaskRecord) {
   return task.status === 'running' && isOpenAITask(task)
 }
 
+function isServerImageJobRunningTask(task: TaskRecord) {
+  return task.status === 'running' && Boolean(task.serverJobId)
+}
+
 function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasInputImages: boolean) {
   const customProvider = getCustomProviderDefinition(settings, provider)
   if (!customProvider?.poll) return false
@@ -1612,7 +1616,7 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
+    if (!isRunningOpenAITask(task) || task.customTaskId || task.serverJobId) return task
 
     const updated: TaskRecord = {
       ...task,
@@ -2002,22 +2006,8 @@ export async function initStore() {
     ) {
       scheduleCustomRecovery(task.id, 0)
     }
-    if (task.serverJobId && task.status === 'running') {
-      scheduleServerImageJobPolling(task.id, task.serverJobId, 0)
-    }
   }
-
-  for (const conversation of useStore.getState().agentConversations) {
-    for (const round of conversation.rounds) {
-      if (!round.serverJobId || round.status !== 'running') continue
-      const profile = round.apiProfileId
-        ? normalizeSettings(useStore.getState().settings).profiles.find((item) => item.id === round.apiProfileId)
-        : getActiveApiProfile(useStore.getState().settings)
-      if (!profile) continue
-      const assistantMessageId = round.assistantMessageId ?? conversation.messages.find((message) => message.roundId === round.id && message.role === 'assistant')?.id ?? genId()
-      scheduleServerAgentJobPolling(conversation.id, round.id, round.serverJobId, round.params ?? DEFAULT_PARAMS, profile, round.createdAt, assistantMessageId, 0)
-    }
-  }
+  resumeServerGenerationPolling()
 
   // 收集所有任务引用的图片 id
   const referencedIds = new Set<string>()
@@ -4126,6 +4116,7 @@ function scheduleServerImageJobPolling(taskId: string, jobId: string, delayMs = 
       updateTaskInStore(taskId, {
         status: 'error',
         error: job.error || '服务端后台生成失败',
+        rawResponsePayload: typeof job.result?.rawResponsePayload === 'string' ? job.result.rawResponsePayload : undefined,
         serverJobId: undefined,
         finishedAt: Date.now(),
         elapsed: Date.now() - latest.createdAt,
@@ -4135,6 +4126,28 @@ function scheduleServerImageJobPolling(taskId: string, jobId: string, delayMs = 
     }
   }, delayMs)
   serverJobPollTimers.set(key, timer)
+}
+
+export function resumeServerGenerationPolling() {
+  const state = useStore.getState()
+  for (const task of state.tasks) {
+    if (isServerImageJobRunningTask(task) && task.serverJobId) {
+      scheduleServerImageJobPolling(task.id, task.serverJobId, 0)
+    }
+  }
+
+  const normalizedSettings = normalizeSettings(state.settings)
+  for (const conversation of state.agentConversations) {
+    for (const round of conversation.rounds) {
+      if (!round.serverJobId || round.status !== 'running') continue
+      const profile = round.apiProfileId
+        ? normalizedSettings.profiles.find((item) => item.id === round.apiProfileId)
+        : getActiveApiProfile(normalizedSettings)
+      if (!profile) continue
+      const assistantMessageId = round.assistantMessageId ?? conversation.messages.find((message) => message.roundId === round.id && message.role === 'assistant')?.id ?? genId()
+      scheduleServerAgentJobPolling(conversation.id, round.id, round.serverJobId, round.params ?? DEFAULT_PARAMS, profile, round.createdAt, assistantMessageId, 0)
+    }
+  }
 }
 
 async function startServerImageJob(taskId: string, requestSettings: AppSettings, task: TaskRecord, inputDataUrls: string[], maskDataUrl?: string) {
