@@ -12,8 +12,9 @@ import type {
   CustomProviderSubmitMapping,
   CustomProviderTemplate,
   ReferenceImageEditAction,
+  ZipDownloadRoute,
 } from '../types'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, DEFAULT_ZIP_DOWNLOAD_ROUTES, ZIP_DOWNLOAD_ROUTE_VALUES } from '../types'
 import { shouldUseApiProxy } from './devProxy'
 import { readRuntimeEnv } from './runtimeEnv'
 import { isImportableConfigUrl } from './customProviderConfigUrl'
@@ -76,6 +77,13 @@ export function normalizeAgentMaxToolRounds(value: unknown, fallback: number | u
 
 function normalizeReferenceImageEditAction(value: unknown): ReferenceImageEditAction {
   return value === 'replace-reference' || value === 'add-mask' ? value : 'ask'
+}
+
+function normalizeZipDownloadRoutes(value: unknown): ZipDownloadRoute[] {
+  if (!Array.isArray(value)) return [...DEFAULT_ZIP_DOWNLOAD_ROUTES]
+  const allowed = new Set<ZipDownloadRoute>(ZIP_DOWNLOAD_ROUTE_VALUES)
+  const routes = value.filter((item): item is ZipDownloadRoute => typeof item === 'string' && allowed.has(item as ZipDownloadRoute))
+  return routes.length ? Array.from(new Set(routes)) : [...DEFAULT_ZIP_DOWNLOAD_ROUTES]
 }
 
 function isCustomProviderTemplate(value: unknown): value is CustomProviderTemplate {
@@ -497,6 +505,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     alwaysShowRetryButton: typeof record.alwaysShowRetryButton === 'boolean' ? record.alwaysShowRetryButton : false,
     enterSubmit: typeof record.enterSubmit === 'boolean' ? record.enterSubmit : false,
     referenceImageEditAction: normalizeReferenceImageEditAction(record.referenceImageEditAction),
+    zipDownloadRoutes: normalizeZipDownloadRoutes(record.zipDownloadRoutes),
     agentScrollToBottomAfterSubmit: typeof record.agentScrollToBottomAfterSubmit === 'boolean' ? record.agentScrollToBottomAfterSubmit : true,
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
@@ -788,6 +797,7 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   alwaysShowRetryButton: false,
   enterSubmit: false,
   referenceImageEditAction: 'ask',
+  zipDownloadRoutes: DEFAULT_ZIP_DOWNLOAD_ROUTES,
   agentScrollToBottomAfterSubmit: true,
   agentMaxToolRounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
   agentWebSearch: false,

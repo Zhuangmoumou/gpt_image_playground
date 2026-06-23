@@ -513,6 +513,10 @@ function getTasks(userId: string, taskIds?: string[]) {
     })
 }
 
+function warnSnapshotSkip(kind: 'image' | 'thumbnail' | 'conversation', id: string, detail: string) {
+  console.warn(`[sync snapshot] skip ${kind} ${id}: ${detail}`)
+}
+
 function getImages(userId: string, imageIds?: string[]) {
   const selectedIds = ids(imageIds)
   if (imageIds && selectedIds.length === 0) return []
@@ -520,17 +524,24 @@ function getImages(userId: string, imageIds?: string[]) {
     ? `SELECT id, storage_path, mime_type, width, height, source, created_at, updated_at FROM images WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY created_at DESC`
     : 'SELECT id, storage_path, mime_type, width, height, source, created_at, updated_at FROM images WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
   return (db.prepare(query).all(userId, ...selectedIds) as ImageRow[])
-    .map((row) => ({
-      id: row.id,
-      dataUrl: readStorageDataUrl(row.storage_path, row.mime_type),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      deletedAt: null,
-      syncState: 'synced',
-      source: row.source,
-      width: row.width ?? undefined,
-      height: row.height ?? undefined,
-    }))
+    .flatMap((row) => {
+      try {
+        return [{
+          id: row.id,
+          dataUrl: readStorageDataUrl(row.storage_path, row.mime_type),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          deletedAt: null,
+          syncState: 'synced',
+          source: row.source,
+          width: row.width ?? undefined,
+          height: row.height ?? undefined,
+        }]
+      } catch (error) {
+        warnSnapshotSkip('image', row.id, error instanceof Error ? error.message : String(error))
+        return []
+      }
+    })
 }
 
 function getThumbnails(userId: string, thumbnailIds?: string[]) {
@@ -546,16 +557,23 @@ function getThumbnails(userId: string, thumbnailIds?: string[]) {
        INNER JOIN images i ON i.user_id = t.user_id AND i.id = t.image_id
        WHERE t.user_id = ? AND i.deleted_at IS NULL`
   return (db.prepare(query).all(userId, ...selectedIds) as ThumbnailRow[])
-    .map((row) => ({
-      id: row.image_id,
-      thumbnailDataUrl: readStorageDataUrl(row.storage_path, 'image/webp'),
-      updatedAt: row.updated_at,
-      deletedAt: null,
-      syncState: 'synced',
-      width: row.width ?? undefined,
-      height: row.height ?? undefined,
-      thumbnailVersion: row.thumbnail_version,
-    }))
+    .flatMap((row) => {
+      try {
+        return [{
+          id: row.image_id,
+          thumbnailDataUrl: readStorageDataUrl(row.storage_path, 'image/webp'),
+          updatedAt: row.updated_at,
+          deletedAt: null,
+          syncState: 'synced',
+          width: row.width ?? undefined,
+          height: row.height ?? undefined,
+          thumbnailVersion: row.thumbnail_version,
+        }]
+      } catch (error) {
+        warnSnapshotSkip('thumbnail', row.image_id, error instanceof Error ? error.message : String(error))
+        return []
+      }
+    })
 }
 
 function getAgentConversations(userId: string, conversationIds?: string[]) {
@@ -565,22 +583,27 @@ function getAgentConversations(userId: string, conversationIds?: string[]) {
     ? `SELECT id, conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders(selectedIds)}) ORDER BY updated_at DESC`
     : 'SELECT id, conversation_json FROM agent_conversations WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC'
   return (db.prepare(query).all(userId, ...selectedIds) as ConversationRow[])
-    .map((row) => {
-      const conversation = jsonColumn<Record<string, unknown>>(row.conversation_json, {})
-      const nextConversation = getPersistableAgentConversation({
-        ...conversation,
-        deletedAt: null,
-        syncState: 'synced',
-      })
-      const nextJson = JSON.stringify(nextConversation)
-      if (nextJson !== row.conversation_json) {
-        try {
-          db.prepare('UPDATE agent_conversations SET conversation_json = ? WHERE user_id = ? AND id = ?').run(nextJson, userId, row.id)
-        } catch {
-          // 旧对话清理是性能优化，失败不影响本次返回已清理的记录。
+    .flatMap((row) => {
+      try {
+        const conversation = jsonColumn<Record<string, unknown>>(row.conversation_json, {})
+        const nextConversation = getPersistableAgentConversation({
+          ...conversation,
+          deletedAt: null,
+          syncState: 'synced',
+        })
+        const nextJson = JSON.stringify(nextConversation)
+        if (nextJson !== row.conversation_json) {
+          try {
+            db.prepare('UPDATE agent_conversations SET conversation_json = ? WHERE user_id = ? AND id = ?').run(nextJson, userId, row.id)
+          } catch {
+            // 旧对话清理是性能优化，失败不影响本次返回已清理的记录。
+          }
         }
+        return [nextConversation]
+      } catch (error) {
+        warnSnapshotSkip('conversation', row.id, error instanceof Error ? error.message : String(error))
+        return []
       }
-      return nextConversation
     })
 }
 

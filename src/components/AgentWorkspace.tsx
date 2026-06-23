@@ -5,7 +5,7 @@ import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
-import { downloadImageIds } from '../lib/downloadImages'
+import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { pullSpecificThumbnailsToLocal } from '../lib/serverSync'
 import TaskCard from './TaskCard'
 import ViewportTooltip from './ViewportTooltip'
@@ -1211,7 +1211,11 @@ export default function AgentWorkspace() {
                                if (imageIds.length === 0) return;
                                try {
                                  const roundIndex = round?.index ?? 0;
-                                 const { successCount, failCount } = await downloadImageIds(imageIds, 'agent-round-' + roundIndex);
+                                 const fileNameBase = 'agent-round-' + roundIndex;
+                                 const settings = useStore.getState().settings;
+                                 const { successCount, failCount } = settings.zipDownloadRoutes.includes('agent-round-all')
+                                   ? await downloadImageEntriesAsZip(getImageZipEntries(imageIds, fileNameBase), fileNameBase)
+                                   : await downloadImageIds(imageIds, fileNameBase);
                                  if (successCount === 0) {
                                    useStore.getState().showToast('下载失败', 'error');
                                  } else if (failCount > 0) {

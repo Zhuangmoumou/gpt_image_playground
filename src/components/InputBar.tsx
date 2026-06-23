@@ -11,7 +11,7 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { useHintTooltip } from '../hooks/useHintTooltip'
-import { downloadImageIds, formatExportFileTime } from '../lib/downloadImages'
+import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
 import Select from './Select'
 import SizePickerModal from './SizePickerModal'
 import ViewportTooltip from './ViewportTooltip'
@@ -471,7 +471,7 @@ export default function InputBar() {
 
   const handleDownloadSelected = useCallback(async () => {
     const selectedTasks = tasks.filter((t) => selectedTaskIds.includes(t.id))
-    const imageIds = selectedTasks.flatMap(t => t.outputImages || [])
+    const imageIds = selectedTasks.flatMap((t) => t.outputImages || [])
     if (imageIds.length === 0) {
       showToast('选中的记录没有图片', 'info')
       return
@@ -479,7 +479,10 @@ export default function InputBar() {
 
     try {
       const timeStr = formatExportFileTime(new Date())
-      const { successCount, failCount } = await downloadImageIds(imageIds, `batch-${timeStr}`)
+      const fileNameBase = `batch-${timeStr}`
+      const { successCount, failCount } = settings.zipDownloadRoutes.includes('task-selection')
+        ? await downloadImageEntriesAsZip(getTaskOutputImageZipEntries(selectedTasks), fileNameBase)
+        : await downloadImageIds(imageIds, fileNameBase)
 
       if (successCount === 0) {
         showToast('下载失败', 'error')
@@ -493,7 +496,7 @@ export default function InputBar() {
       showToast('下载失败', 'error')
     }
     clearSelection()
-  }, [tasks, selectedTaskIds, showToast, clearSelection])
+  }, [tasks, selectedTaskIds, settings.zipDownloadRoutes, showToast, clearSelection])
 
   const maskDraft = useStore((s) => s.maskDraft)
   const clearMaskDraft = useStore((s) => s.clearMaskDraft)
@@ -625,6 +628,9 @@ export default function InputBar() {
   const isFalProvider = activeProvider === 'fal'
   const agentAutoImageCount = appMode === 'agent' && activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses'
   const moderationDisabled = isFalProvider
+  const transparentOutputAvailable = appMode === 'gallery'
+  const showTransparentOutputControl = transparentOutputAvailable && params.output_format === 'png'
+  const transparentOutputEnabled = transparentOutputAvailable && showTransparentOutputControl && params.transparent_output
   const compressionDisabled = params.output_format === 'png' || isFalProvider
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = isFalProvider && inputImages.length === 0
@@ -654,6 +660,10 @@ export default function InputBar() {
       ]
   const atImageLimit = inputImages.length >= API_MAX_IMAGES
   const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加` : '上传图片'
+  const transparentOutputHint = useHintTooltip()
+  const handleTransparentOutputMenuOpenChange = useCallback((open: boolean) => {
+    if (open) transparentOutputHint.hide()
+  }, [transparentOutputHint.hide])
   const compressionHint = useHintTooltip({ enabled: () => compressionDisabled })
   const moderationHint = useHintTooltip({ enabled: () => moderationDisabled })
   const sizeHint = useHintTooltip({ enabled: () => isFalTextToImage })
@@ -745,7 +755,7 @@ export default function InputBar() {
 
   const insertPromptTextAtSelection = useCallback((text: string) => {
     const el = textareaRef.current
-    if (el) {
+    if (el && !text.includes('\n')) {
       el.focus()
       if (document.execCommand('insertText', false, text)) {
         syncPromptFromContentEditable()
@@ -1307,8 +1317,23 @@ export default function InputBar() {
   }, [prompt, inputImages])
 
   useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    const last = el.lastChild
+    const hasSentinel = last instanceof HTMLBRElement && last.dataset.sentinelBr === 'true'
+    const needSentinel = prompt.endsWith('\n')
+    if (needSentinel && !hasSentinel) {
+      const br = document.createElement('br')
+      br.dataset.sentinelBr = 'true'
+      el.appendChild(br)
+    } else if (!needSentinel && hasSentinel) {
+      last.remove()
+    }
+  }, [prompt, inputImages])
+
+  useEffect(() => {
     adjustTextareaHeight()
-  }, [prompt, inputImages, adjustTextareaHeight])
+  }, [prompt, inputImages, adjustTextareaHeight, isMobile, mobileCollapsed])
 
   // 监听 selectionchange 以在光标移动时更新位置（contentEditable 的 onSelect 不可靠）
   useEffect(() => {
@@ -1796,7 +1821,12 @@ export default function InputBar() {
         <span className="text-gray-400 dark:text-gray-500 ml-1">格式</span>
         <Select
           value={params.output_format}
-          onChange={(val) => setParams({ output_format: val as any })}
+          onChange={(val) => {
+            setParams({
+              output_format: val as any,
+              ...(val === 'png' ? { output_compression: null } : { transparent_output: false }),
+            })
+          }}
           options={[
             { label: 'PNG', value: 'png' },
             { label: 'JPEG', value: 'jpeg' },
@@ -1805,36 +1835,67 @@ export default function InputBar() {
           className={selectClass}
         />
       </label>
-      <label
-        className="relative flex flex-col gap-0.5"
-        onMouseEnter={compressionHint.show}
-        onMouseLeave={compressionHint.hide}
-        onTouchStart={compressionHint.startTouch}
-        onTouchEnd={compressionHint.clearTimer}
-        onTouchCancel={compressionHint.hide}
-        onClick={compressionHint.show}
-      >
-        <span className="text-gray-400 dark:text-gray-500 ml-1">压缩率</span>
-        <input
-          value={outputCompressionInput}
-          onChange={(e) => setOutputCompressionInput(e.target.value)}
-          onBlur={commitOutputCompression}
-          disabled={compressionDisabled}
-          type="number"
-          min={0}
-          max={100}
-          placeholder="0-100"
-          className={`px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] focus:outline-none text-xs transition-all duration-200 shadow-sm ${
-            compressionDisabled
-              ? 'bg-gray-100/50 dark:bg-white/[0.05] opacity-50 cursor-not-allowed'
-              : 'bg-white/50 dark:bg-white/[0.03]'
-            }`}
-        />
-        <ButtonTooltip
-          visible={compressionHint.visible}
-          text={isFalProvider ? 'fal.ai 不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
-        />
-      </label>
+      {showTransparentOutputControl ? (
+        <label
+          className="relative flex flex-col gap-0.5"
+          onMouseEnter={transparentOutputHint.show}
+          onMouseLeave={transparentOutputHint.hide}
+          onTouchStart={transparentOutputHint.startTouch}
+          onTouchEnd={transparentOutputHint.clearTimer}
+          onTouchCancel={transparentOutputHint.hide}
+          onClick={transparentOutputHint.show}
+        >
+          <span className="text-gray-400 dark:text-gray-500 ml-1">透明背景</span>
+          <Select
+            value={transparentOutputEnabled ? 'on' : 'off'}
+            onChange={(val) => {
+              if (!transparentOutputAvailable) return
+              setParams({ transparent_output: val === 'on', output_compression: null })
+            }}
+            options={[
+              { label: 'false', value: 'off' },
+              { label: 'true', value: 'on' },
+            ]}
+            className={selectClass}
+            onOpenChange={handleTransparentOutputMenuOpenChange}
+          />
+          <ButtonTooltip
+            visible={transparentOutputHint.visible}
+            text="基于提示词与后处理，并非模型原生生成"
+          />
+        </label>
+      ) : (
+        <label
+          className="relative flex flex-col gap-0.5"
+          onMouseEnter={compressionHint.show}
+          onMouseLeave={compressionHint.hide}
+          onTouchStart={compressionHint.startTouch}
+          onTouchEnd={compressionHint.clearTimer}
+          onTouchCancel={compressionHint.hide}
+          onClick={compressionHint.show}
+        >
+          <span className="text-gray-400 dark:text-gray-500 ml-1">压缩率</span>
+          <input
+            value={outputCompressionInput}
+            onChange={(e) => setOutputCompressionInput(e.target.value)}
+            onBlur={commitOutputCompression}
+            disabled={compressionDisabled}
+            type="number"
+            min={0}
+            max={100}
+            placeholder="0-100"
+            className={`px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] focus:outline-none text-xs transition-all duration-200 shadow-sm ${
+              compressionDisabled
+                ? 'bg-gray-100/50 dark:bg-white/[0.05] opacity-50 cursor-not-allowed'
+                : 'bg-white/50 dark:bg-white/[0.03]'
+              }`}
+          />
+          <ButtonTooltip
+            visible={compressionHint.visible}
+            text={isFalProvider ? 'fal.ai 不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
+          />
+        </label>
+      )}
       <label
         className="relative flex flex-col gap-0.5"
         onMouseEnter={moderationHint.show}
@@ -2138,7 +2199,9 @@ export default function InputBar() {
               className="col-start-1 row-start-1 min-h-[42px] w-full overflow-hidden ios-rounded-scroll-fix whitespace-pre-wrap break-words rounded-2xl border border-gray-200/60 bg-white/50 pl-4 pr-10 py-3 text-sm leading-relaxed shadow-sm outline-none transition-[border-color,box-shadow] duration-200 focus:ring-1 focus:ring-blue-300/40 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-100 dark:focus:ring-blue-500/30"
             />
             {prompt.length === 0 && (
-              <div className="prompt-placeholder col-start-1 row-start-1 pointer-events-none pl-4 pr-10 py-3 text-sm leading-relaxed text-gray-400 dark:text-gray-500">
+              <div className={`prompt-placeholder col-start-1 row-start-1 pointer-events-none pl-4 pr-10 py-3 text-sm leading-relaxed text-gray-400 dark:text-gray-500${
+                isMobile && mobileCollapsed ? ' truncate' : ''
+              }`}>
                 {promptPlaceholder}
               </div>
             )}
@@ -2230,7 +2293,6 @@ export default function InputBar() {
                   onMouseEnter={() => setAttachHover(true)}
                   onMouseLeave={() => setAttachHover(false)}
                 >
-                  <ButtonTooltip visible={attachHover} text={uploadImageTooltipText} />
                   <button
                     onClick={() => {
                       if (!atImageLimit) {

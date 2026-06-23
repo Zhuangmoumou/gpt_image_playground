@@ -42,14 +42,15 @@ export function getPersistableTask<T extends { rawResponsePayload?: unknown }>(t
 }
 
 export function getPersistableAgentConversation<T extends Pick<AgentConversation, 'rounds'>>(conversation: T): T {
-  const rounds = conversation.rounds.map((round) => round.responseOutput?.length
+  const sourceRounds = Array.isArray(conversation.rounds) ? conversation.rounds : []
+  const rounds = sourceRounds.map((round) => round.responseOutput?.length
     ? {
         ...round,
         responseOutput: round.responseOutput.map(getPersistableResponseOutputItem),
       }
     : round,
   )
-  const changed = rounds.some((round, index) => round !== conversation.rounds[index])
+  const changed = !Array.isArray(conversation.rounds) || rounds.some((round, index) => round !== sourceRounds[index])
   return changed ? { ...conversation, rounds } : conversation
 }
 

@@ -1034,7 +1034,13 @@ export async function bootstrapServerData() {
 }
 
 export async function exportServerData(options: { exportConfig?: boolean; exportTasks?: boolean }) {
-  const snapshot = await serverApi<ServerSnapshot>('/api/sync/snapshot')
+  let snapshot: ServerSnapshot
+  try {
+    snapshot = await serverApi<ServerSnapshot>('/api/sync/snapshot')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`读取服务端导出快照失败：${message}`)
+  }
   const exportedAt = Date.now()
   const imageFiles: ExportData['imageFiles'] = {}
   const thumbnailFiles: NonNullable<ExportData['thumbnailFiles']> = {}

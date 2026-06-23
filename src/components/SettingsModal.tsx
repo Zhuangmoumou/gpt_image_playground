@@ -25,7 +25,7 @@ import {
   switchApiProfileProvider,
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type CustomProviderDefinition } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ZipDownloadRoute } from '../types'
 import { useAuth } from '../auth/AuthProvider'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -67,6 +67,14 @@ const DEFAULT_COPY_IMPORT_URL_OPTIONS = {
 }
 
 type CopyImportUrlOptions = typeof DEFAULT_COPY_IMPORT_URL_OPTIONS
+
+const ZIP_DOWNLOAD_ROUTE_OPTIONS: Array<{ route: ZipDownloadRoute; label: string; description: string }> = [
+  { route: 'task-selection', label: '任务列表 > 多选', description: '主页中框选、Ctrl/⌘ 点选或移动端滑动选中任务后的“下载选中”。' },
+  { route: 'image-context-menu-all', label: '图片右键菜单 > 下载全部', description: '右键图片时下载同一组输出图片。' },
+  { route: 'task-detail-all', label: '任务详情 > 下载全部', description: '任务详情弹窗中下载当前任务的所有输出图。' },
+  { route: 'task-detail-partial', label: '任务详情 > 下载中间步骤图', description: '任务详情弹窗中下载流式生成保留的中间步骤图。' },
+  { route: 'agent-round-all', label: 'Agent 对话轮次 > 下载所有图片', description: 'Agent 对话中下载某轮回复关联的全部图片。' },
+]
 
 function readCopyImportUrlOptions(): CopyImportUrlOptions {
   if (typeof window === 'undefined') return DEFAULT_COPY_IMPORT_URL_OPTIONS
@@ -321,7 +329,8 @@ export default function SettingsModal() {
   const llmPromptTooltipTimerRef = useRef<number | null>(null)
   const settingsScrollBoundaryRef = useRef<HTMLDivElement>(null)
   const customProviderScrollBoundaryRef = useRef<HTMLDivElement>(null)
-  
+  const zipDownloadRouteScrollBoundaryRef = useRef<HTMLDivElement>(null)
+
   const [draft, setDraft] = useState<AppSettings>(normalizeSettings(settings))
   const [timeoutInput, setTimeoutInput] = useState(String(getActiveApiProfile(settings).timeout))
   const [agentMaxToolRoundsInput, setAgentMaxToolRoundsInput] = useState(String(settings.agentMaxToolRounds))
@@ -329,6 +338,7 @@ export default function SettingsModal() {
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [profileMenuMaxHeight, setProfileMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
   const [showCustomProviderImport, setShowCustomProviderImport] = useState(false)
+  const [showZipDownloadRouteManager, setShowZipDownloadRouteManager] = useState(false)
   const [editingCustomProviderId, setEditingCustomProviderId] = useState<string | null>(null)
   const [customProviderForm, setCustomProviderForm] = useState<CustomProviderForm>(createDefaultCustomProviderForm())
   const [customProviderImportError, setCustomProviderImportError] = useState<string | null>(null)
@@ -411,6 +421,14 @@ export default function SettingsModal() {
 
   const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
     apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
+
+  const enabledZipDownloadRouteCount = ZIP_DOWNLOAD_ROUTE_OPTIONS
+    .filter((option) => draft.zipDownloadRoutes.includes(option.route))
+    .length
+
+  const zipDownloadRouteSummary = enabledZipDownloadRouteCount
+    ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
+    : '未开启任何使用压缩包进行批量下载的途径'
 
   const wasSettingsOpenRef = useRef(false)
   const dismissedServerApiDiffKeyRef = useRef<string | null>(null)
@@ -615,6 +633,13 @@ export default function SettingsModal() {
     return committedDraft
   }, [activeProfile.id, activeProviderIsOpenAICompatible, agentMaxToolRoundsInput, draft, timeoutInput])
 
+  const setZipDownloadRouteEnabled = (route: ZipDownloadRoute, enabled: boolean) => {
+    const nextRoutes = enabled
+      ? Array.from(new Set([...draft.zipDownloadRoutes, route]))
+      : draft.zipDownloadRoutes.filter((item) => item !== route)
+    commitSettings({ ...draft, zipDownloadRoutes: nextRoutes })
+  }
+
   const updateCopyImportUrlOptions = (patch: Partial<CopyImportUrlOptions>) => {
     setCopyImportUrlOptions((previous) => {
       const next = { ...previous, ...patch, includeApiKey: false }
@@ -709,6 +734,10 @@ export default function SettingsModal() {
   }
 
   const handleClose = () => {
+    if (showZipDownloadRouteManager) {
+      setShowZipDownloadRouteManager(false)
+      return
+    }
     setShowSettings(false)
   }
 
@@ -736,7 +765,7 @@ export default function SettingsModal() {
   }
 
   useCloseOnEscape(showSettings, handleClose)
-  usePreventBackgroundScroll(showSettings, showCustomProviderImport ? customProviderScrollBoundaryRef : settingsScrollBoundaryRef)
+  usePreventBackgroundScroll(showSettings, showZipDownloadRouteManager ? zipDownloadRouteScrollBoundaryRef : showCustomProviderImport ? customProviderScrollBoundaryRef : settingsScrollBoundaryRef)
 
   if (!showSettings) return null
 
@@ -1378,15 +1407,34 @@ export default function SettingsModal() {
                         value={draft.enterSubmit ? 'enter' : 'ctrl-enter'}
                         onChange={(val) => commitSettings({ ...draft, enterSubmit: val === 'enter' })}
                         options={[
+                          { label: navigator.userAgent.includes('Mac') ? '⌘ + Enter' : 'Ctrl + Enter', value: 'ctrl-enter' },
                           { label: 'Enter', value: 'enter' },
-                          { label: navigator.userAgent.includes('Mac') ? 'Cmd + Enter' : 'Ctrl + Enter', value: 'ctrl-enter' }
                         ]}
                         className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
                       />
                     </div>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    选择 Enter 提交时，使用 Shift + Enter 换行；否则直接 Enter 换行。
+                    选择 {navigator.userAgent.includes('Mac') ? '⌘ + Enter' : 'Ctrl + Enter'} 时，Enter 换行；选择 Enter 时，Shift + Enter 换行。
+                  </div>
+                </div>
+                <div className="sm:hidden">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">任务提交方式</span>
+                    <div className="w-36">
+                      <Select
+                        value={draft.enterSubmit ? 'enter' : 'button'}
+                        onChange={(val) => commitSettings({ ...draft, enterSubmit: val === 'enter' })}
+                        options={[
+                          { label: '发送按钮', value: 'button' },
+                          { label: '回车/发送按钮', value: 'enter' },
+                        ]}
+                        className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    选择回车/发送按钮时，回车可提交；否则仅使用发送按钮提交。
                   </div>
                 </div>
                 <div className="block">
@@ -1425,6 +1473,21 @@ export default function SettingsModal() {
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                     控制未添加遮罩的参考图点击编辑按钮时，是每次询问、直接替换参考图，还是直接添加遮罩。
+                  </div>
+                </div>
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">使用压缩包进行的批量下载途径</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowZipDownloadRouteManager(true)}
+                      className="shrink-0 rounded-xl border border-gray-200/80 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 hover:text-gray-900 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
+                    >
+                      管理
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    {zipDownloadRouteSummary}
                   </div>
                 </div>
                 <div className="block">
@@ -2323,6 +2386,80 @@ export default function SettingsModal() {
         </div>
       </div>
       </div>
+
+        {showZipDownloadRouteManager && createPortal(
+          <div
+            data-no-drag-select
+            className="fixed inset-0 z-[110] flex items-center justify-center p-4"
+            onClick={() => setShowZipDownloadRouteManager(false)}
+          >
+            <div className="absolute inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-md animate-overlay-in" />
+            <div
+              className="relative z-10 flex max-h-[85vh] w-full max-w-md flex-col rounded-3xl border border-white/50 bg-white/90 shadow-[0_8px_40px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl animate-confirm-in dark:border-white/[0.08] dark:bg-gray-900/90 dark:shadow-[0_8px_40px_rgb(0,0,0,0.4)] dark:ring-white/10 sm:max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="shrink-0 p-6 pb-2">
+                <div className="mb-3 flex items-center justify-between gap-4">
+                  <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">使用压缩包进行批量下载</h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowZipDownloadRouteManager(false)}
+                    className="shrink-0 rounded-full p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
+                    aria-label="关闭"
+                  >
+                    <CloseIcon className="h-5 w-5" />
+                  </button>
+                </div>
+                <div data-selectable-text className="text-sm leading-relaxed text-gray-500 dark:text-gray-400">
+                  开启后，在对应途径进行批量下载时会将结果下载为一个 ZIP，而不是多个图片文件。
+                </div>
+              </div>
+
+              <div ref={zipDownloadRouteScrollBoundaryRef} className="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-2">
+                {ZIP_DOWNLOAD_ROUTE_OPTIONS.map((option) => {
+                  const isChecked = draft.zipDownloadRoutes.includes(option.route)
+                  return (
+                    <div
+                      key={option.route}
+                      role="checkbox"
+                      aria-checked={isChecked}
+                      tabIndex={0}
+                      onClick={() => setZipDownloadRouteEnabled(option.route, !isChecked)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        setZipDownloadRouteEnabled(option.route, !isChecked)
+                      }}
+                      className={`cursor-pointer rounded-2xl border p-3.5 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${isChecked ? 'border-blue-500/30 bg-blue-50/50 dark:border-blue-400/30 dark:bg-blue-500/[0.05]' : 'border-gray-100 bg-gray-50/70 hover:bg-gray-100/70 dark:border-white/[0.06] dark:bg-white/[0.03] dark:hover:bg-white/[0.05]'}`}
+                    >
+                      <div onClick={(event) => event.stopPropagation()}>
+                        <Checkbox
+                          checked={isChecked}
+                          onChange={(checked) => setZipDownloadRouteEnabled(option.route, checked)}
+                          label={<span className="text-sm font-medium text-gray-700 dark:text-gray-200">{option.label}</span>}
+                        />
+                      </div>
+                      <div data-selectable-text className="mt-1.5 pl-6 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                        {option.description}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="flex shrink-0 gap-2 p-6 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowZipDownloadRouteManager(false)}
+                  className="flex-1 rounded-lg bg-blue-500 py-2 text-sm font-medium text-white transition hover:bg-blue-600"
+                >
+                  完成
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
         {showCustomProviderImport && createPortal(
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
